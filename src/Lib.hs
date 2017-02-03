@@ -77,6 +77,21 @@ getPGConFuncName "PGInt4" = "pgInt4"
 makeReadTypes :: [ColumnInfo] -> EnvM [Type]
 makeReadTypes fieldInfos = mapM makePgType fieldInfos
 
+makeHaskellTypes :: [ColumnInfo] -> EnvM [Type]
+makeHaskellTypes fieldInfos = mapM makeHaskellType fieldInfos
+
+makeHaskellType :: ColumnInfo -> EnvM Type
+makeHaskellType ci = do
+  (_, options) <- ask
+  nt <- lookupNewtypeForField (columnName ci)
+  Just intName <- lift $ lookupTypeName "Int"
+  Just textName <- lift $ lookupTypeName "Text"
+  return $ case nt of
+    Nothing -> case (columnType ci) of
+      IntegerColumn -> ConT intName
+      TextColumn -> ConT textName
+    Just t -> ConT t
+
 makeWriteTypes :: [ColumnInfo] -> EnvM [Type]
 makeWriteTypes fieldInfos = do
   Just maybeName <- lift $ lookupTypeName "Maybe"
@@ -89,7 +104,7 @@ makeWriteTypes fieldInfos = do
           then (AppT (ConT maybeName) defaultType)
           else defaultType
 
-data Options = Options { overrideDefaultTypes :: [(String, Name)] }
+data Options = Options { overrideDefaultTypes :: [(String, Name)], generateInstancesFor :: [Name] }
 
 defaultOptions = Options []
                             
@@ -146,13 +161,21 @@ makeOpaleyeModel t r = do
     getColumns conn t
   fields <- mapM (lift.newName.columnName) fieldInfos
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(addPrefix r).columnName <$> fieldInfos) fields] []
+  haskell <- makeHaskellAlias (mkName r) recordPolyName fieldInfos
   pgRead <- makePgReadAlias (mkName $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ makePGWriteTypeName r) recordPolyName fieldInfos
   instances <- makeInstances t
-  return $ [rec, pgRead, pgWrite] ++ instances
+  return $ [rec, haskell, pgRead, pgWrite] ++ instances
   where
     addPrefix :: String -> String -> String
     addPrefix pre (s:ss) = "_" ++ (toLower <$> pre) ++ (toUpper s:ss)
+    makeHaskellAlias :: Name -> Name -> [ColumnInfo] -> EnvM Dec
+    makeHaskellAlias hname poly_name fieldInfos = do
+      types <- makeHaskellTypes fieldInfos
+      return $ TySynD hname [] (full_type types)
+      where
+        full_type :: [Type] -> Type
+        full_type typs = foldl AppT (ConT poly_name) typs
     makePgReadAlias :: Name -> Name -> [ColumnInfo] -> EnvM Dec
     makePgReadAlias name modelType fieldInfos = do
       readType <- makePgReadType modelType fieldInfos
@@ -187,10 +210,16 @@ makeInstances t = do
 
 makeInstancesForColumn :: ColumnInfo -> EnvM [Dec]
 makeInstancesForColumn ci = do
-  fromFieldInstance <- makeFromFieldInstance ci
-  queryRunnerInstance <- makeQueryRunnerInstance ci
-  defaultInstance <- makeDefaultInstance ci
-  return $ fromFieldInstance ++ queryRunnerInstance ++ defaultInstance
+  (_, options) <- ask
+  nt <- lookupNewtypeForField (columnName ci)
+  case nt of 
+    Nothing -> return []
+    Just x -> if x `elem` (generateInstancesFor options) then (do
+                fromFieldInstance <- makeFromFieldInstance ci
+                queryRunnerInstance <- makeQueryRunnerInstance ci
+                defaultInstance <- makeDefaultInstance ci
+                return $ fromFieldInstance ++ queryRunnerInstance ++ defaultInstance)
+              else return []
   where
     makeFromFieldInstance :: ColumnInfo -> EnvM [Dec]
     makeFromFieldInstance ci = do
