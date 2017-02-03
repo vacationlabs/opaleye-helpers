@@ -7,10 +7,13 @@ import Lib
 import Database.PostgreSQL.Simple
 import Opaleye
 import Data.Profunctor.Product.TH (makeAdaptorAndInstance)
+import Control.Monad.Trans.Reader
 
-$(makeOpaleyeModel defaultConnectInfo { connectPassword = "postgres", connectDatabase = "scratch"} "users" "Users")
-$(makeAdaptorAndInstance ("pUsers") ''UsersPoly)
-$(makeOpaleyeTable  defaultConnectInfo { connectPassword = "postgres", connectDatabase = "scratch"} "users" "Users")
+data UserId = UserId Int
+
+runReaderT  (makeOpaleyeModel "users" "Users") $ (defaultConnectInfo { connectPassword = "postgres", connectDatabase = "scratch"}, Options [("id", ''UserId)])
+makeAdaptorAndInstance ("pUsers") ''UsersPoly
+runReaderT (makeOpaleyeTable "users" "Users") $ (defaultConnectInfo { connectPassword = "postgres", connectDatabase = "scratch"}, defaultOptions)
 
 main :: IO ()
 main = return ()
