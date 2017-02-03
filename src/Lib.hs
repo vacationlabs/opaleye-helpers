@@ -7,6 +7,7 @@ import Database.PostgreSQL.Simple
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax hiding (lift)
 import Control.Monad.IO.Class
+import Control.Monad
 import Data.Char
 import Data.Maybe
 import Data.Profunctor.Product.TH (makeAdaptorAndInstance)
@@ -36,8 +37,10 @@ getColumns conn tname = do
     makeColumnType "text" = TextColumn
     makeColumnType "integer" = IntegerColumn
 
-lookupNewtypeForField :: Options -> String -> Maybe Name
-lookupNewtypeForField options name = lookup name (overrideDefaultTypes options) 
+lookupNewtypeForField :: String -> EnvM (Maybe Name)
+lookupNewtypeForField name = do
+  (_, options) <- ask
+  return $ lookup name (overrideDefaultTypes options) 
 
 makePgType :: ColumnInfo -> EnvM Type
 makePgType (ColumnInfo dbColumnName ct hasDefault isNullable) = do
@@ -47,7 +50,8 @@ makePgType (ColumnInfo dbColumnName ct hasDefault isNullable) = do
     Nothing -> error "Couldn't find opaleye's 'Column' type in scope. Have you imported Opaleye module?"
     Just columnName -> do
       Just n <- lift $ lookupTypeName "Nullable"
-      case lookupNewtypeForField options dbColumnName of
+      x <- lookupNewtypeForField dbColumnName
+      case x of
         Just pgType -> do
           return $ makeFinalType columnName n pgType
         Nothing -> do
@@ -62,9 +66,13 @@ makePgType (ColumnInfo dbColumnName ct hasDefault isNullable) = do
                        nn = AppT (ConT columnName) (ConT pgType)
                        in if isNullable then (AppT (ConT columnName) (AppT (ConT nullableName) (ConT pgType)))  else nn 
 
-    getPGColumnTypeName :: ColumnType -> String
-    getPGColumnTypeName TextColumn = "PGText"
-    getPGColumnTypeName IntegerColumn = "PGInt4"
+getPGColumnTypeName :: ColumnType -> String
+getPGColumnTypeName TextColumn = "PGText"
+getPGColumnTypeName IntegerColumn = "PGInt4"
+
+getPGConFuncName :: String -> String
+getPGConFuncName "PGText" = "pgStrictText"
+getPGConFuncName "PGInt4" = "pgInt4"
 
 makeReadTypes :: [ColumnInfo] -> EnvM [Type]
 makeReadTypes fieldInfos = mapM makePgType fieldInfos
@@ -140,7 +148,8 @@ makeOpaleyeModel t r = do
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(addPrefix r).columnName <$> fieldInfos) fields] []
   pgRead <- makePgReadAlias (mkName $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ makePGWriteTypeName r) recordPolyName fieldInfos
-  return $ [rec, pgRead, pgWrite] 
+  instances <- makeInstances t
+  return $ [rec, pgRead, pgWrite] ++ instances
   where
     addPrefix :: String -> String -> String
     addPrefix pre (s:ss) = "_" ++ (toLower <$> pre) ++ (toUpper s:ss)
@@ -167,3 +176,88 @@ makeOpaleyeModel t r = do
       where
         makeBangType :: (Name, Name) -> VarBangType
         makeBangType (fieldName, name) = let bang = Bang NoSourceUnpackedness NoSourceStrictness in (fieldName, bang, VarT name)
+
+makeInstances :: String -> EnvM [Dec]
+makeInstances t = do
+  fieldInfos <- (lift.runIO) $ do
+    conn <- connect connectInfo
+    getColumns conn t
+  newTypeFields <- filterM (\x -> fmap isJust $ (lookupNewtypeForField.columnName) x) fieldInfos
+  concat <$> (mapM makeInstancesForColumn newTypeFields)
+
+makeInstancesForColumn :: ColumnInfo -> EnvM [Dec]
+makeInstancesForColumn ci = do
+  fromFieldInstance <- makeFromFieldInstance ci
+  queryRunnerInstance <- makeQueryRunnerInstance ci
+  defaultInstance <- makeDefaultInstance ci
+  return $ fromFieldInstance ++ queryRunnerInstance ++ defaultInstance
+  where
+    makeFromFieldInstance :: ColumnInfo -> EnvM [Dec]
+    makeFromFieldInstance ci = do
+      (_, options) <- ask
+      Just pgTypeName <- lookupNewtypeForField (columnName ci)
+      Just pgValueConstructor <- lift $ lookupValueName (nameBase pgTypeName)
+      Just fmapName <- lift $ lookupValueName "fmap"
+      Just fromFieldName <- lift $ lookupValueName "fromField"
+      Just fromFieldClassName <- lift $ lookupTypeName "FromField"
+      return $ let
+        fieldName = mkName "field"
+        bsName = mkName "bs"
+        clause = Clause [(VarP $ fieldName), (VarP $ bsName)] (NormalB body) []
+        fromFieldExp = AppE (AppE (VarE fromFieldName) (VarE fieldName)) (VarE bsName)
+        body = AppE (AppE (VarE fmapName) (ConE pgValueConstructor)) fromFieldExp
+        funcd = FunD fromFieldName [clause]
+        in [InstanceD Nothing [] (AppT (ConT fromFieldClassName) (ConT pgTypeName)) [funcd]]
+    makeQueryRunnerInstance :: ColumnInfo -> EnvM [Dec]
+    makeQueryRunnerInstance ci = do
+      (_, options) <- ask
+      Just pgTypeName <- lookupNewtypeForField (columnName ci)
+      Just queryRunnerClassName <- lift $ lookupTypeName "QueryRunnerColumnDefault"
+      Just pgDefColName <- lift $ lookupTypeName $ getPGColumnTypeName (columnType ci)
+      return $ let
+        body = VarE (mkName "fieldQueryRunnerColumn")
+        clause = Clause [] (NormalB body) []
+        funcd = FunD (mkName "queryRunnerColumnDefault") [clause]
+        instD = InstanceD Nothing [] (AppT (AppT (ConT queryRunnerClassName) (ConT pgDefColName)) (ConT pgTypeName)) [funcd]
+        instD2 = InstanceD Nothing [] (AppT (AppT (ConT queryRunnerClassName) (ConT pgTypeName)) (ConT pgTypeName)) [funcd]
+        in [instD, instD2]
+    makeDefaultInstance :: ColumnInfo -> EnvM [Dec]
+    makeDefaultInstance ci = do
+      (_, options) <- ask
+      let pgDefColString = getPGColumnTypeName (columnType ci)
+      Just columntypeName <- lift $ lookupTypeName "Column"
+      Just defaultName <- lift $ lookupTypeName "Default"
+      Just constantName <- lift $ lookupTypeName "Constant"
+      Just constantConName <- lift $ lookupValueName "Constant"
+      Just fmapName <- lift $ lookupValueName "fmap"
+      Just pgTypeName <- lookupNewtypeForField (columnName ci)
+      Just pgTypeCon <- lift $ lookupValueName $ nameBase pgTypeName
+      Just pgDefColName <- lift $ lookupTypeName pgDefColString
+      Just pgConFuncName <- lift $ lookupValueName $ getPGConFuncName $ pgDefColString
+      let func1 = let
+            body = AppE (ConE constantConName) (VarE $ mkName "f") 
+            clause = let
+              pName = mkName "x"
+              cbody =  AppE (VarE pgConFuncName) (VarE pName)
+              clause = Clause [ConP pgTypeCon [VarP pName]] (NormalB cbody) []
+              fbody = FunD (mkName "f") [clause]
+              in Clause [] (NormalB body) [fbody]
+            in FunD (mkName "def") [clause] 
+      let func2 = let
+            body = AppE (AppE (VarE fmapName) (VarE $ mkName "f")) (VarE $ mkName "def")
+            clause = let
+              c1 = AppT (ConT columntypeName) (ConT pgDefColName)
+              c2 = AppT (ConT columntypeName) (ConT pgTypeName)
+              sig = SigD (mkName "f") $ AppT (AppT ArrowT c1) c2
+              ubody = VarE (mkName "unsafeCoerceColumn")
+              clause = Clause [] (NormalB ubody) []
+              fbody = FunD (mkName "f")  [clause]
+              in Clause [] (NormalB body) [sig, fbody]
+            in FunD (mkName "def") [clause]
+      return $ let
+        instD1 = InstanceD Nothing [] (AppT (AppT (AppT (ConT defaultName) (ConT constantName)) (ConT pgTypeName)) (AppT (ConT columntypeName) (ConT pgDefColName))) [func1]
+        instD2 = InstanceD Nothing [] (AppT (AppT (AppT (ConT defaultName) (ConT constantName)) (ConT pgTypeName)) (AppT (ConT columntypeName) (ConT pgTypeName))) [func2]
+        in [instD1, instD2]
+      
+
+connectInfo = defaultConnectInfo { connectPassword = "postgres", connectDatabase = "scratch"}
