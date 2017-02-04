@@ -6,6 +6,7 @@
 module Main where
 
 import Lib
+import ModelOptions
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.FromField
 import Opaleye
@@ -14,16 +15,11 @@ import Data.Profunctor.Product.TH (makeAdaptorAndInstance)
 import Control.Monad.Trans.Reader
 import Data.Text
 import Data.Vector
+import ModelOptions
 
-newtype UserId = UserId Int deriving (Show)
-newtype ProductId = ProductId Int deriving (Show)
-
-runReaderT  (makeOpaleyeModel "users" "User") $ (connectInfo, Options [("id", ''UserId)] [''UserId])
-runReaderT  (makeOpaleyeModel "products" "Product") $ (connectInfo, Options [("id", ''ProductId), ("user_id", ''UserId)] [''ProductId])
-makeAdaptorAndInstance ("pUser") ''UserPoly
-makeAdaptorAndInstance ("pProduct") ''ProductPoly
-runReaderT (makeOpaleyeTable "users" "User") $ (connectInfo, Options [("id", ''UserId)] [''UserId])
-runReaderT (makeOpaleyeTable "products" "Product") $ (connectInfo, Options [("id", ''ProductId), ("user_id", ''UserId)] [''ProductId])
+makeOpaleyeModels (connectInfo, options)
+makeAdaptorAndInstances (connectInfo, options)
+makeOpaleyeTables (connectInfo, options)
 makeArrayInstances
 
 getUserRows :: IO [(User, Product)]
@@ -41,7 +37,7 @@ getUserRows = do
 insertToUsers :: IO ()
 insertToUsers = do
   conn <- connect defaultConnectInfo { connectDatabase = "scratch"}
-  runInsert conn usersTable (constant $ User (Just $ UserId 6) ("User 6" ::Text) ("five@mail" :: Text) (fromList ["a", "b", "c"] :: Vector Text))
+  runInsert conn usersTable (constant $ User (Just $ UserId 6) ("User 6" ::Text) ("five@mail" :: Text) (fromList ["a", "b", "c"] :: Vector Text) (fromList [1,2,3] :: Vector Int))
   return ()
   
 main :: IO ()

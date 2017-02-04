@@ -4,6 +4,7 @@
 module Lib where 
 
 import Database.PostgreSQL.Simple
+import Database.PostgreSQL.Simple.FromField
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax hiding (lift)
 import Control.Monad.IO.Class
@@ -15,18 +16,24 @@ import Data.Profunctor.Product.Default
 import Opaleye
 import Data.Text (Text)
 import Data.Vector (Vector)
+import Data.Typeable
 
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 
+data Options = Options { tableOptions :: [(String, TableOptions)] }
+
+data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, Name)], generateInstancesFor :: [Name] }
+
 type ColumnType = String
 
-data ColumnInfo = ColumnInfo { columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool}
+data ColumnInfo = ColumnInfo { columnTableName :: String, columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool}
 
 testFunc2 :: ReaderT () Q (Maybe Name)
 testFunc2 = lift $ lookupTypeName "wewq" 
 
-type EnvM a = ReaderT (ConnectInfo, Options) Q a
+type Env = (ConnectInfo, Options)
+type EnvM a = ReaderT Env Q a
 
 getColumns :: Connection -> String -> IO [ColumnInfo]
 getColumns conn tname = do
@@ -36,22 +43,21 @@ getColumns conn tname = do
   return $ makeColumnInfo <$> field_rows
   where
     makeColumnInfo :: (String, String, Maybe String, String) -> ColumnInfo
-    makeColumnInfo (name, ctype, hasDefault, isNullable) = ColumnInfo name ctype (isJust hasDefault) (isNullable == "YES")
+    makeColumnInfo (name, ctype, hasDefault, isNullable) = ColumnInfo tname name ctype (isJust hasDefault) (isNullable == "YES")
 
-lookupNewtypeForField :: String -> EnvM (Maybe Name)
-lookupNewtypeForField name = do
+lookupNewtypeForField :: ColumnInfo -> EnvM (Maybe Name)
+lookupNewtypeForField ci = do
   (_, options) <- ask
-  return $ lookup name (overrideDefaultTypes options) 
+  return $ lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options) 
 
 makePgType :: ColumnInfo -> EnvM Type
-makePgType (ColumnInfo dbColumnName ct hasDefault isNullable) = do
+makePgType ci@(ColumnInfo  _ dbColumnName ct hasDefault isNullable) = do
   c <- lift $ lookupTypeName "Column"
-  (_, options) <- ask
   case c of
     Nothing -> error "Couldn't find opaleye's 'Column' type in scope. Have you imported Opaleye module?"
     Just columnName -> do
       Just n <- lift $ lookupTypeName "Nullable"
-      x <- lookupNewtypeForField dbColumnName
+      x <- lookupNewtypeForField ci
       case x of
         Just pgType -> do
           return $ makeFinalType columnName n (ConT pgType)
@@ -131,7 +137,7 @@ makeHaskellTypes fieldInfos = mapM makeHaskellType fieldInfos
 
 makeHaskellType :: ColumnInfo -> EnvM Type
 makeHaskellType ci = do
-  nt <- lookupNewtypeForField (columnName ci)
+  nt <- lookupNewtypeForField ci
   case nt of
     Nothing -> makeNullable <$> getTypeFor (columnType ci)
     Just t -> return $ ConT t
@@ -180,13 +186,16 @@ makeWriteTypes fieldInfos = do
           then (AppT (ConT maybeName) defaultType)
           else defaultType
 
-data Options = Options { overrideDefaultTypes :: [(String, Name)], generateInstancesFor :: [Name] }
+makeOpaleyeTables :: Env -> Q [Dec]
+makeOpaleyeTables env = runReaderT (do
+  (_, options) <- ask
+  let names = fst <$> tableOptions options
+  let models = (modelName.snd) <$> tableOptions options
+  concat <$> zipWithM makeOpaleyeTable names models) env
 
-defaultOptions = Options []
-                            
 makeOpaleyeTable :: String -> String -> EnvM [Dec]
 makeOpaleyeTable t r = do
-  (connectInfo, options) <- ask
+  (connectInfo, _) <- ask
   lift $ do
     fieldInfos <- runIO $ do
       conn <- connect connectInfo
@@ -229,7 +238,7 @@ makeAdapterName tn = 'p':tn
 
 makeArrayInstances :: Q [Dec]
 makeArrayInstances = [d|
-    instance (QueryRunnerColumnDefault (PGArray PGText) (Vector Text)) where
+    instance (Typeable b, FromField b, QueryRunnerColumnDefault a b) => (QueryRunnerColumnDefault (PGArray a) (Vector b)) where
       queryRunnerColumnDefault = fieldQueryRunnerColumn
       
     instance (IsSqlType b, Default Constant a (Column b)) => Default Constant (Vector a) (Column (PGArray b)) where
@@ -242,9 +251,16 @@ makeArrayInstances = [d|
       def = toNullable <$> def
   |]
 
+makeOpaleyeModels :: Env -> Q [Dec]
+makeOpaleyeModels env = runReaderT (do
+  (connectInfo, options) <- ask
+  let names = fst <$> tableOptions options
+  let models = (modelName.snd) <$> tableOptions options
+  concat <$> zipWithM makeOpaleyeModel names models) env
+  
 makeOpaleyeModel :: String -> String -> EnvM [Dec]
 makeOpaleyeModel t r = do
-  (connectInfo, options) <- ask
+  (connectInfo, _) <- ask
   let recordName = mkName r
   let recordPolyName = mkName $ r ++ "Poly"
   fieldInfos <- (lift.runIO) $ do
@@ -297,16 +313,19 @@ makeInstances t = do
   fieldInfos <- (lift.runIO) $ do
     conn <- connect connectInfo
     getColumns conn t
-  newTypeFields <- filterM (\x -> fmap isJust $ (lookupNewtypeForField.columnName) x) fieldInfos
+  newTypeFields <- filterM (\x -> fmap isJust $ lookupNewtypeForField x) fieldInfos
   concat <$> (mapM makeInstancesForColumn newTypeFields)
+
+getTableOptions :: String -> Options -> TableOptions
+getTableOptions tname options = fromJust $ lookup tname (tableOptions options)
 
 makeInstancesForColumn :: ColumnInfo -> EnvM [Dec]
 makeInstancesForColumn ci = do
   (_, options) <- ask
-  nt <- lookupNewtypeForField (columnName ci)
+  nt <- lookupNewtypeForField ci
   case nt of 
     Nothing -> return []
-    Just x -> if x `elem` (generateInstancesFor options) then (do
+    Just x -> if x `elem` (generateInstancesFor $ getTableOptions (columnTableName ci) options) then (do
                 fromFieldInstance <- makeFromFieldInstance ci
                 queryRunnerInstance <- makeQueryRunnerInstance ci
                 defaultInstance <- makeDefaultInstance ci
@@ -315,8 +334,7 @@ makeInstancesForColumn ci = do
   where
     makeFromFieldInstance :: ColumnInfo -> EnvM [Dec]
     makeFromFieldInstance ci = do
-      (_, options) <- ask
-      Just pgTypeName <- lookupNewtypeForField (columnName ci)
+      Just pgTypeName <- lookupNewtypeForField ci
       Just pgValueConstructor <- lift $ lookupValueName (nameBase pgTypeName)
       Just fmapName <- lift $ lookupValueName "fmap"
       Just fromFieldName <- lift $ lookupValueName "fromField"
@@ -331,8 +349,7 @@ makeInstancesForColumn ci = do
         in [InstanceD Nothing [] (AppT (ConT fromFieldClassName) (ConT pgTypeName)) [funcd]]
     makeQueryRunnerInstance :: ColumnInfo -> EnvM [Dec]
     makeQueryRunnerInstance ci = do
-      (_, options) <- ask
-      Just pgTypeName <- lookupNewtypeForField (columnName ci)
+      Just pgTypeName <- lookupNewtypeForField ci
       Just queryRunnerClassName <- lift $ lookupTypeName "QueryRunnerColumnDefault"
       pgDefColType <- getPGColumnType (columnType ci)
       return $ let
@@ -344,14 +361,13 @@ makeInstancesForColumn ci = do
         in [instD, instD2]
     makeDefaultInstance :: ColumnInfo -> EnvM [Dec]
     makeDefaultInstance ci = do
-      (_, options) <- ask
       pgDefColType <- getPGColumnType(columnType ci)
       Just columntypeName <- lift $ lookupTypeName "Column"
       Just defaultName <- lift $ lookupTypeName "Default"
       Just constantName <- lift $ lookupTypeName "Constant"
       Just constantConName <- lift $ lookupValueName "Constant"
       Just fmapName <- lift $ lookupValueName "fmap"
-      Just pgTypeName <- lookupNewtypeForField (columnName ci)
+      Just pgTypeName <- lookupNewtypeForField ci
       Just pgTypeCon <- lift $ lookupValueName $ nameBase pgTypeName
       pgConFuncExp <- getPGConFuncExp pgDefColType
       let func1 = let
@@ -378,6 +394,13 @@ makeInstancesForColumn ci = do
         instD1 = InstanceD Nothing [] (AppT (AppT (AppT (ConT defaultName) (ConT constantName)) (ConT pgTypeName)) (AppT (ConT columntypeName) pgDefColType)) [func1]
         instD2 = InstanceD Nothing [] (AppT (AppT (AppT (ConT defaultName) (ConT constantName)) (ConT pgTypeName)) (AppT (ConT columntypeName) (ConT pgTypeName))) [func2]
         in [instD1, instD2]
-      
+
+makeAdaptorAndInstances :: Env -> Q [Dec]
+makeAdaptorAndInstances env = runReaderT (do
+  (_, options) <- ask
+  let models = (modelName.snd) <$> tableOptions options
+  let an = makeAdapterName <$> models
+  pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (x ++ "Poly")) models
+  lift $ concat <$> zipWithM makeAdaptorAndInstance an pn) env
 
 connectInfo = defaultConnectInfo { connectPassword = "postgres", connectDatabase = "scratch"}
