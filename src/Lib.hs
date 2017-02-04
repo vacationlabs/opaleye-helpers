@@ -11,11 +11,15 @@ import Control.Monad
 import Data.Char
 import Data.Maybe
 import Data.Profunctor.Product.TH (makeAdaptorAndInstance)
+import Data.Profunctor.Product.Default
+import Opaleye
+import Data.Text (Text)
+import Data.Vector (Vector)
 
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 
-data ColumnType = KeyColumn | IntegerColumn  | TextColumn | TimestampColumn
+type ColumnType = String
 
 data ColumnInfo = ColumnInfo { columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool}
 
@@ -27,15 +31,12 @@ type EnvM a = ReaderT (ConnectInfo, Options) Q a
 getColumns :: Connection -> String -> IO [ColumnInfo]
 getColumns conn tname = do
   field_rows <- query conn
-    "select column_name, data_type, column_default, is_nullable from information_schema.columns where table_name = ?" 
+    "select column_name, udt_name, column_default, is_nullable from information_schema.columns where table_name = ?" 
     (Only tname) :: IO [(String, String, Maybe String, String)]
   return $ makeColumnInfo <$> field_rows
   where
     makeColumnInfo :: (String, String, Maybe String, String) -> ColumnInfo
-    makeColumnInfo (name, ctype, hasDefault, isNullable) = ColumnInfo name (makeColumnType ctype) (isJust hasDefault) (isNullable == "YES")
-    makeColumnType :: String -> ColumnType
-    makeColumnType "text" = TextColumn
-    makeColumnType "integer" = IntegerColumn
+    makeColumnInfo (name, ctype, hasDefault, isNullable) = ColumnInfo name ctype (isJust hasDefault) (isNullable == "YES")
 
 lookupNewtypeForField :: String -> EnvM (Maybe Name)
 lookupNewtypeForField name = do
@@ -53,26 +54,74 @@ makePgType (ColumnInfo dbColumnName ct hasDefault isNullable) = do
       x <- lookupNewtypeForField dbColumnName
       case x of
         Just pgType -> do
-          return $ makeFinalType columnName n pgType
+          return $ makeFinalType columnName n (ConT pgType)
         Nothing -> do
-          let columnTypeName = getPGColumnTypeName ct
-          p <- lift $ lookupTypeName columnTypeName
-          case p of
-            Nothing -> error $ "Couldn't find opaleye's column type '" ++ columnTypeName ++ "' in scope"
-            Just pgType -> return $ makeFinalType columnName n pgType
+          --let columnTypeName = getPGColumnTypeName ct
+          pgType <- getPGColumnType ct
+          return $ makeFinalType columnName n pgType
   where
-    makeFinalType :: Name -> Name -> Name -> Type
+    makeFinalType :: Name -> Name -> Type -> Type
     makeFinalType columnName nullableName pgType = let 
-                       nn = AppT (ConT columnName) (ConT pgType)
-                       in if isNullable then (AppT (ConT columnName) (AppT (ConT nullableName) (ConT pgType)))  else nn 
+                       nn = AppT (ConT columnName) pgType
+                       in if isNullable then (AppT (ConT columnName) (AppT (ConT nullableName) pgType))  else nn 
 
-getPGColumnTypeName :: ColumnType -> String
-getPGColumnTypeName TextColumn = "PGText"
-getPGColumnTypeName IntegerColumn = "PGInt4"
+getPGColumnType :: ColumnType -> EnvM Type
+getPGColumnType ct = lift $ (getType ct) 
+  where
+    getType :: ColumnType -> Q Type
+    getType ct = do
+      pg_array <- ConT <$> fromJust <$> lookupTypeName "PGArray"
+      case ct of 
+        "bool"        -> ConT <$> fromJust <$> lookupTypeName "PGBool"
+        "int2"        -> ConT <$> fromJust <$> lookupTypeName "PGInt2"
+        "int4"        -> ConT <$> fromJust <$> lookupTypeName "PGInt4"
+        "int8"        -> ConT <$> fromJust <$> lookupTypeName "PGInt8"
+        "float4"      -> ConT <$> fromJust <$> lookupTypeName "PGFloat4"
+        "float8"      -> ConT <$> fromJust <$> lookupTypeName "PGFloat8"
+        "numeric"     -> ConT <$> fromJust <$> lookupTypeName "PGNumeric"
+        "char"        -> ConT <$> fromJust <$> lookupTypeName "PGText"
+        "text"        -> ConT <$> fromJust <$> lookupTypeName "PGText"
+        "bytea"       -> ConT <$> fromJust <$> lookupTypeName "PGBytea"
+        "date"        -> ConT <$> fromJust <$> lookupTypeName "PGDate"
+        "timestamp"   -> ConT <$> fromJust <$> lookupTypeName "PGTimestamp"
+        "timestamptz" -> ConT <$> fromJust <$> lookupTypeName "PGTimestamptz"
+        "time"        -> ConT <$> fromJust <$> lookupTypeName "PGTime"
+        "timetz"      -> ConT <$> fromJust <$> lookupTypeName "PGTime"
+        "interval"    -> ConT <$> fromJust <$> lookupTypeName "PGInt8"
+        "uuid"        -> ConT <$> fromJust <$> lookupTypeName "PGUuid"
+        "json"        -> ConT <$> fromJust <$> lookupTypeName "PGJson"
+        "jsonb"       -> ConT <$> fromJust <$> lookupTypeName "PGJsonb"
+        "varchar"     -> ConT <$> fromJust <$> lookupTypeName "PGText"
+        "oid"         -> ConT <$> fromJust <$> lookupTypeName "PGInt8"
+        "inet"        -> ConT <$> fromJust <$> lookupTypeName "PGText"
+        "_varchar"    -> (AppT pg_array) <$> getType "text"
+        "_text"    -> (AppT pg_array) <$> getType "text"
+        "_int4"       -> (AppT pg_array) <$> getType "int4"
+        other         -> error $ "Unimplemented PostgresQL type conversion for " ++ show other
 
-getPGConFuncName :: String -> String
-getPGConFuncName "PGText" = "pgStrictText"
-getPGConFuncName "PGInt4" = "pgInt4"
+getPGConFuncExp :: Type -> EnvM Exp
+getPGConFuncExp (ConT name) = do
+  let tname = case (nameBase name) of 
+        "PGText" -> "pgStrictText"
+        "PGInt4" -> "pgInt4"
+        "PGInt8" -> "pgInt8"
+        "PGBool" -> "pgBool"
+        "PGTimestamp" -> "pgLocalTime"
+        "PGTimestampz" -> "pgUTCTime"
+        "pGTime" -> "pgTimeOfDay"
+        "PGJson" -> "pgValueJSON"
+        "PGJsonb" -> "pgValueJSONB"
+  g <- lift $ lookupValueName tname
+  case g of
+    Just a -> return $ VarE a
+    Nothing -> error $ "Cannot find " ++ tname
+getPGConFuncExp (AppT pga pgt) = do
+  g <- lift $ lookupValueName "pgArray"
+  let pga_func = case g of
+        Just a -> VarE a
+        Nothing -> error $ "Cannot find pgArray"
+  func1 <- getPGConFuncExp pgt
+  return $ AppE pga_func func1
 
 makeReadTypes :: [ColumnInfo] -> EnvM [Type]
 makeReadTypes fieldInfos = mapM makePgType fieldInfos
@@ -82,15 +131,42 @@ makeHaskellTypes fieldInfos = mapM makeHaskellType fieldInfos
 
 makeHaskellType :: ColumnInfo -> EnvM Type
 makeHaskellType ci = do
-  (_, options) <- ask
   nt <- lookupNewtypeForField (columnName ci)
-  Just intName <- lift $ lookupTypeName "Int"
-  Just textName <- lift $ lookupTypeName "Text"
-  return $ case nt of
-    Nothing -> case (columnType ci) of
-      IntegerColumn -> ConT intName
-      TextColumn -> ConT textName
-    Just t -> ConT t
+  case nt of
+    Nothing -> makeNullable <$> getTypeFor (columnType ci)
+    Just t -> return $ ConT t
+  where
+    array :: Type
+    array = ConT (''Vector)
+    getTypeFor :: ColumnType -> EnvM Type
+    getTypeFor ct = case ct of
+      "bool"        -> lift $ (ConT).fromJust <$> lookupTypeName "Bool"
+      "int2"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int16"
+      "int4"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int"
+      "int8"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int64"
+      "float4"      -> lift $ (ConT).fromJust <$> lookupTypeName "Float"
+      "float8"      -> lift $ (ConT).fromJust <$> lookupTypeName "Double"
+      "numeric"     -> lift $ (ConT).fromJust <$> lookupTypeName "Scientific"
+      "char"        -> lift $ (ConT).fromJust <$> lookupTypeName "Char"
+      "text"        -> lift $ (ConT).fromJust <$> lookupTypeName "Text"
+      "bytea"       -> lift $ (ConT).fromJust <$> lookupTypeName "ByteString"
+      "date"        -> lift $ (ConT).fromJust <$> lookupTypeName "Day"
+      "timestamp"   -> lift $ (ConT).fromJust <$> lookupTypeName "LocalTime"
+      "timestamptz" -> lift $ (ConT).fromJust <$> lookupTypeName "UTCTime"
+      "time"        -> lift $ (ConT).fromJust <$> lookupTypeName "TimeOfDay"
+      "timetz"      -> lift $ (ConT).fromJust <$> lookupTypeName "TimeOfDay"
+      "interval"    -> lift $ (ConT).fromJust <$> lookupTypeName "DiffTime"
+      "uuid"        -> lift $ (ConT).fromJust <$> lookupTypeName "UUID"
+      "json"        -> lift $ (ConT).fromJust <$> lookupTypeName "JSON.Value"
+      "jsonb"       -> lift $ (ConT).fromJust <$> lookupTypeName "JSON.Value"
+      "varchar"     -> lift $ (ConT).fromJust <$> lookupTypeName "Text"
+      "_varchar"    -> (AppT array) <$> getTypeFor "varchar"
+      "_text"       -> (AppT array) <$> getTypeFor "varchar"
+      "_int4"       -> (AppT array) <$> getTypeFor "int4"
+      other         -> error $ "Unimplemented PostgresQL type conversion for " ++ show other
+    makeNullable :: Type -> Type
+    makeNullable typ = if (columnNullable ci) then (AppT (ConT ''Maybe) typ) else typ
+
 
 makeWriteTypes :: [ColumnInfo] -> EnvM [Type]
 makeWriteTypes fieldInfos = do
@@ -151,6 +227,21 @@ makePGWriteTypeName tn = tn ++ "PGWrite"
 makeAdapterName :: String -> String
 makeAdapterName tn = 'p':tn
 
+makeArrayInstances :: Q [Dec]
+makeArrayInstances = [d|
+    instance (QueryRunnerColumnDefault (PGArray PGText) (Vector Text)) where
+      queryRunnerColumnDefault = fieldQueryRunnerColumn
+      
+    instance (IsSqlType b, Default Constant a (Column b)) => Default Constant (Vector a) (Column (PGArray b)) where
+      def = Constant f
+        where
+          f ::(IsSqlType b, Default Constant a (Column b)) =>  Vector a -> Column (PGArray b)
+          f x = pgArray constant (toList x)
+
+    instance (IsSqlType b, Default Constant a (Column b)) => Default Constant (Vector a) (Column (Nullable (PGArray b))) where
+      def = toNullable <$> def
+  |]
+
 makeOpaleyeModel :: String -> String -> EnvM [Dec]
 makeOpaleyeModel t r = do
   (connectInfo, options) <- ask
@@ -159,8 +250,9 @@ makeOpaleyeModel t r = do
   fieldInfos <- (lift.runIO) $ do
     conn <- connect connectInfo
     getColumns conn t
+  deriveShow <- lift $ [t| Show |]
   fields <- mapM (lift.newName.columnName) fieldInfos
-  let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(addPrefix r).columnName <$> fieldInfos) fields] []
+  let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(addPrefix r).columnName <$> fieldInfos) fields] [deriveShow]
   haskell <- makeHaskellAlias (mkName r) recordPolyName fieldInfos
   pgRead <- makePgReadAlias (mkName $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ makePGWriteTypeName r) recordPolyName fieldInfos
@@ -242,18 +334,18 @@ makeInstancesForColumn ci = do
       (_, options) <- ask
       Just pgTypeName <- lookupNewtypeForField (columnName ci)
       Just queryRunnerClassName <- lift $ lookupTypeName "QueryRunnerColumnDefault"
-      Just pgDefColName <- lift $ lookupTypeName $ getPGColumnTypeName (columnType ci)
+      pgDefColType <- getPGColumnType (columnType ci)
       return $ let
         body = VarE (mkName "fieldQueryRunnerColumn")
         clause = Clause [] (NormalB body) []
         funcd = FunD (mkName "queryRunnerColumnDefault") [clause]
-        instD = InstanceD Nothing [] (AppT (AppT (ConT queryRunnerClassName) (ConT pgDefColName)) (ConT pgTypeName)) [funcd]
+        instD = InstanceD Nothing [] (AppT (AppT (ConT queryRunnerClassName) pgDefColType) (ConT pgTypeName)) [funcd]
         instD2 = InstanceD Nothing [] (AppT (AppT (ConT queryRunnerClassName) (ConT pgTypeName)) (ConT pgTypeName)) [funcd]
         in [instD, instD2]
     makeDefaultInstance :: ColumnInfo -> EnvM [Dec]
     makeDefaultInstance ci = do
       (_, options) <- ask
-      let pgDefColString = getPGColumnTypeName (columnType ci)
+      pgDefColType <- getPGColumnType(columnType ci)
       Just columntypeName <- lift $ lookupTypeName "Column"
       Just defaultName <- lift $ lookupTypeName "Default"
       Just constantName <- lift $ lookupTypeName "Constant"
@@ -261,13 +353,12 @@ makeInstancesForColumn ci = do
       Just fmapName <- lift $ lookupValueName "fmap"
       Just pgTypeName <- lookupNewtypeForField (columnName ci)
       Just pgTypeCon <- lift $ lookupValueName $ nameBase pgTypeName
-      Just pgDefColName <- lift $ lookupTypeName pgDefColString
-      Just pgConFuncName <- lift $ lookupValueName $ getPGConFuncName $ pgDefColString
+      pgConFuncExp <- getPGConFuncExp pgDefColType
       let func1 = let
             body = AppE (ConE constantConName) (VarE $ mkName "f") 
             clause = let
               pName = mkName "x"
-              cbody =  AppE (VarE pgConFuncName) (VarE pName)
+              cbody =  AppE pgConFuncExp (VarE pName)
               clause = Clause [ConP pgTypeCon [VarP pName]] (NormalB cbody) []
               fbody = FunD (mkName "f") [clause]
               in Clause [] (NormalB body) [fbody]
@@ -275,7 +366,7 @@ makeInstancesForColumn ci = do
       let func2 = let
             body = AppE (AppE (VarE fmapName) (VarE $ mkName "f")) (VarE $ mkName "def")
             clause = let
-              c1 = AppT (ConT columntypeName) (ConT pgDefColName)
+              c1 = AppT (ConT columntypeName) pgDefColType
               c2 = AppT (ConT columntypeName) (ConT pgTypeName)
               sig = SigD (mkName "f") $ AppT (AppT ArrowT c1) c2
               ubody = VarE (mkName "unsafeCoerceColumn")
@@ -284,7 +375,7 @@ makeInstancesForColumn ci = do
               in Clause [] (NormalB body) [sig, fbody]
             in FunD (mkName "def") [clause]
       return $ let
-        instD1 = InstanceD Nothing [] (AppT (AppT (AppT (ConT defaultName) (ConT constantName)) (ConT pgTypeName)) (AppT (ConT columntypeName) (ConT pgDefColName))) [func1]
+        instD1 = InstanceD Nothing [] (AppT (AppT (AppT (ConT defaultName) (ConT constantName)) (ConT pgTypeName)) (AppT (ConT columntypeName) pgDefColType)) [func1]
         instD2 = InstanceD Nothing [] (AppT (AppT (AppT (ConT defaultName) (ConT constantName)) (ConT pgTypeName)) (AppT (ConT columntypeName) (ConT pgTypeName))) [func2]
         in [instD1, instD2]
       

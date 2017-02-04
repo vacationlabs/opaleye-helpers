@@ -47,6 +47,7 @@ executable th-opaleye-exe
                      , profunctors
                      , mtl
                      , lens
+                     , vector
                      , transformers
                      , template-haskell
   default-language:    Haskell2010
