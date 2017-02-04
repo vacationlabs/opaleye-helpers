@@ -17,6 +17,7 @@ import Data.Text
 import Data.Vector
 import ModelOptions
 
+makeNewTypes (connectInfo, options)
 makeOpaleyeModels (connectInfo, options)
 makeAdaptorAndInstances (connectInfo, options)
 makeOpaleyeTables (connectInfo, options)

@@ -23,7 +23,7 @@ import Control.Monad.Trans.Reader
 
 data Options = Options { tableOptions :: [(String, TableOptions)] }
 
-data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, Name)], generateInstancesFor :: [Name] }
+data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, String)], generateInstancesFor :: [String] }
 
 type ColumnType = String
 
@@ -48,7 +48,9 @@ getColumns conn tname = do
 lookupNewtypeForField :: ColumnInfo -> EnvM (Maybe Name)
 lookupNewtypeForField ci = do
   (_, options) <- ask
-  return $ lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options) 
+  case lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options) of
+    Just x -> lift $ lookupTypeName x
+    Nothing -> return Nothing
 
 makePgType :: ColumnInfo -> EnvM Type
 makePgType ci@(ColumnInfo  _ dbColumnName ct hasDefault isNullable) = do
@@ -253,11 +255,44 @@ makeArrayInstances = [d|
 
 makeOpaleyeModels :: Env -> Q [Dec]
 makeOpaleyeModels env = runReaderT (do
-  (connectInfo, options) <- ask
+  (_, options) <- ask
   let names = fst <$> tableOptions options
   let models = (modelName.snd) <$> tableOptions options
   concat <$> zipWithM makeOpaleyeModel names models) env
-  
+
+makeNewTypes :: Env -> Q [Dec]
+makeNewTypes env = runReaderT makeNewTypes' env
+  where
+  makeNewTypes' :: EnvM [Dec]
+  makeNewTypes' = do
+    nts <- collectNewTypes
+    (a, b) <- foldM makeNewType ([], []) nts
+    return b
+    where
+    collectNewTypes :: EnvM [(ColumnInfo, String)]
+    collectNewTypes = do
+      (connInfo, options) <- ask
+      concat <$> mapM getNewTypes (tableOptions options)
+    getNewTypes :: (String, TableOptions) -> EnvM [(ColumnInfo, String)]
+    getNewTypes (tbName, tbOptions) = do
+      (connectInfo, _) <- ask
+      fieldInfos <- (lift.runIO) $ do
+        conn <- connect connectInfo
+        getColumns conn tbName
+      return $ fromJust <$> (filter isJust $ (tryNewType tbOptions) <$> fieldInfos)
+    tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, String)
+    tryNewType to ci = (\n -> (ci, n)) <$> lookup (columnName ci) (overrideDefaultTypes to)
+    makeNewType :: ([String], [Dec]) -> (ColumnInfo, String) -> EnvM ([String], [Dec])
+    makeNewType (added, decs) (_, nt_name) = do
+      if nt_name `elem` added then (return (added, decs)) else do
+        dec <- makeNewType' nt_name
+        return (nt_name:added, dec:decs)
+      where
+        makeNewType' :: String -> EnvM Dec
+        makeNewType' name = do
+          let bang = Bang NoSourceUnpackedness NoSourceStrictness
+          return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, ConT ''Int)]) [ConT ''Show]
+    
 makeOpaleyeModel :: String -> String -> EnvM [Dec]
 makeOpaleyeModel t r = do
   (connectInfo, _) <- ask
@@ -325,7 +360,7 @@ makeInstancesForColumn ci = do
   nt <- lookupNewtypeForField ci
   case nt of 
     Nothing -> return []
-    Just x -> if x `elem` (generateInstancesFor $ getTableOptions (columnTableName ci) options) then (do
+    Just x -> if (nameBase x) `elem` (generateInstancesFor $ getTableOptions (columnTableName ci) options) then (do
                 fromFieldInstance <- makeFromFieldInstance ci
                 queryRunnerInstance <- makeQueryRunnerInstance ci
                 defaultInstance <- makeDefaultInstance ci
