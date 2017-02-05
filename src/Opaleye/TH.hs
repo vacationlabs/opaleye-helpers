@@ -148,41 +148,43 @@ makeReadTypes fieldInfos = mapM makePgType fieldInfos
 makeHaskellTypes :: [ColumnInfo] -> EnvM [Type]
 makeHaskellTypes fieldInfos = mapM makeHaskellType fieldInfos
 
+getHaskellTypeFor :: ColumnType -> EnvM Type
+getHaskellTypeFor ct = case ct of
+  "bool"        -> lift $ (ConT).fromJust <$> lookupTypeName "Bool"
+  "int2"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int16"
+  "int4"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int"
+  "int8"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int64"
+  "float4"      -> lift $ (ConT).fromJust <$> lookupTypeName "Float"
+  "float8"      -> lift $ (ConT).fromJust <$> lookupTypeName "Double"
+  "numeric"     -> lift $ (ConT).fromJust <$> lookupTypeName "Scientific"
+  "char"        -> lift $ (ConT).fromJust <$> lookupTypeName "Char"
+  "text"        -> lift $ (ConT).fromJust <$> lookupTypeName "Text"
+  "bytea"       -> lift $ (ConT).fromJust <$> lookupTypeName "ByteString"
+  "date"        -> lift $ (ConT).fromJust <$> lookupTypeName "Day"
+  "timestamp"   -> lift $ (ConT).fromJust <$> lookupTypeName "LocalTime"
+  "timestamptz" -> lift $ (ConT).fromJust <$> lookupTypeName "UTCTime"
+  "time"        -> lift $ (ConT).fromJust <$> lookupTypeName "TimeOfDay"
+  "timetz"      -> lift $ (ConT).fromJust <$> lookupTypeName "TimeOfDay"
+  "interval"    -> lift $ (ConT).fromJust <$> lookupTypeName "DiffTime"
+  "uuid"        -> lift $ (ConT).fromJust <$> lookupTypeName "UUID"
+  "json"        -> lift $ (ConT).fromJust <$> lookupTypeName "JSON.Value"
+  "jsonb"       -> lift $ (ConT).fromJust <$> lookupTypeName "JSON.Value"
+  "varchar"     -> lift $ (ConT).fromJust <$> lookupTypeName "Text"
+  "_varchar"    -> (AppT array) <$> getHaskellTypeFor "varchar"
+  "_text"       -> (AppT array) <$> getHaskellTypeFor "varchar"
+  "_int4"       -> (AppT array) <$> getHaskellTypeFor "int4"
+  other         -> error $ "Unimplemented PostgresQL type conversion for " ++ show other
+  where
+    array :: Type
+    array = ConT (''Vector)
+
 makeHaskellType :: ColumnInfo -> EnvM Type
 makeHaskellType ci = do
   nt <- lookupNewtypeForField ci
   case nt of
-    Nothing -> makeNullable <$> getTypeFor (columnType ci)
+    Nothing -> makeNullable <$> getHaskellTypeFor (columnType ci)
     Just t -> return $ ConT t
   where
-    array :: Type
-    array = ConT (''Vector)
-    getTypeFor :: ColumnType -> EnvM Type
-    getTypeFor ct = case ct of
-      "bool"        -> lift $ (ConT).fromJust <$> lookupTypeName "Bool"
-      "int2"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int16"
-      "int4"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int"
-      "int8"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int64"
-      "float4"      -> lift $ (ConT).fromJust <$> lookupTypeName "Float"
-      "float8"      -> lift $ (ConT).fromJust <$> lookupTypeName "Double"
-      "numeric"     -> lift $ (ConT).fromJust <$> lookupTypeName "Scientific"
-      "char"        -> lift $ (ConT).fromJust <$> lookupTypeName "Char"
-      "text"        -> lift $ (ConT).fromJust <$> lookupTypeName "Text"
-      "bytea"       -> lift $ (ConT).fromJust <$> lookupTypeName "ByteString"
-      "date"        -> lift $ (ConT).fromJust <$> lookupTypeName "Day"
-      "timestamp"   -> lift $ (ConT).fromJust <$> lookupTypeName "LocalTime"
-      "timestamptz" -> lift $ (ConT).fromJust <$> lookupTypeName "UTCTime"
-      "time"        -> lift $ (ConT).fromJust <$> lookupTypeName "TimeOfDay"
-      "timetz"      -> lift $ (ConT).fromJust <$> lookupTypeName "TimeOfDay"
-      "interval"    -> lift $ (ConT).fromJust <$> lookupTypeName "DiffTime"
-      "uuid"        -> lift $ (ConT).fromJust <$> lookupTypeName "UUID"
-      "json"        -> lift $ (ConT).fromJust <$> lookupTypeName "JSON.Value"
-      "jsonb"       -> lift $ (ConT).fromJust <$> lookupTypeName "JSON.Value"
-      "varchar"     -> lift $ (ConT).fromJust <$> lookupTypeName "Text"
-      "_varchar"    -> (AppT array) <$> getTypeFor "varchar"
-      "_text"       -> (AppT array) <$> getTypeFor "varchar"
-      "_int4"       -> (AppT array) <$> getTypeFor "int4"
-      other         -> error $ "Unimplemented PostgresQL type conversion for " ++ show other
     makeNullable :: Type -> Type
     makeNullable typ = if (columnNullable ci) then (AppT (ConT ''Maybe) typ) else typ
 
@@ -294,15 +296,39 @@ makeNewTypes env = runReaderT makeNewTypes' env
     tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, String)
     tryNewType to ci = (\n -> (ci, n)) <$> lookup (columnName ci) (overrideDefaultTypes to)
     makeNewType :: ([String], [Dec]) -> (ColumnInfo, String) -> EnvM ([String], [Dec])
-    makeNewType (added, decs) (_, nt_name) = do
+    makeNewType (added, decs) (ci, nt_name) = do
       if nt_name `elem` added then (return (added, decs)) else do
         dec <- makeNewType' nt_name
-        return (nt_name:added, dec:decs)
+        if (columnNullable ci) then (do
+          ins <- makeDefaultInstanceForNullable nt_name
+          return (nt_name:added, dec:(ins++decs))
+          ) else return (nt_name:added, dec:decs)
       where
+        makeDefaultInstanceForNullable :: String -> EnvM [Dec]
+        makeDefaultInstanceForNullable name = do
+          argname <- lift $ newName "x"
+          let code = return $ ConT $ mkName name
+          let conp = do
+                jp <- [p|Just $(return $ VarP argname) |]
+                return $ ConP (mkName name) [jp]
+          let conp_empty = do
+                jp <- [p|Nothing|]
+                return $ ConP (mkName name) [jp]
+          lift $ [d|
+            instance Default Constant $(code) (Column (Nullable $(code))) where
+              def = Constant f
+                where
+                  f :: $(code) -> Column (Nullable $(code))
+                  f $(conp_empty) = Opaleye.null
+                  f $(conp) = toNullable $ unsafeCoerceColumn $ pgStrictText $(return $ VarE argname)
+            instance (QueryRunnerColumnDefault (Nullable $(code)) $(code)) where
+              queryRunnerColumnDefault = fieldQueryRunnerColumn
+            |]
         makeNewType' :: String -> EnvM Dec
         makeNewType' name = do
           let bang = Bang NoSourceUnpackedness NoSourceStrictness
-          return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, ConT ''Int)]) [ConT ''Show]
+          haskellType <- makeHaskellType ci
+          return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show]
     
 makeOpaleyeModel :: String -> String -> EnvM [Dec]
 makeOpaleyeModel t r = do
@@ -407,7 +433,7 @@ makeInstancesForColumn ci = do
         instD2 = InstanceD Nothing [] (AppT (AppT (ConT queryRunnerClassName) (ConT pgTypeName)) (ConT pgTypeName)) [funcd]
         in [instD, instD2]
     makeDefaultInstance :: ColumnInfo -> EnvM [Dec]
-    makeDefaultInstance ci = do
+    makeDefaultInstance ci = if (columnNullable ci) then return [] else do
       pgDefColType <- getPGColumnType(columnType ci)
       Just columntypeName <- lift $ lookupTypeName "Column"
       Just defaultName <- lift $ lookupTypeName "Default"
@@ -440,7 +466,7 @@ makeInstancesForColumn ci = do
       return $ let
         instD1 = InstanceD Nothing [] (AppT (AppT (AppT (ConT defaultName) (ConT constantName)) (ConT pgTypeName)) (AppT (ConT columntypeName) pgDefColType)) [func1]
         instD2 = InstanceD Nothing [] (AppT (AppT (AppT (ConT defaultName) (ConT constantName)) (ConT pgTypeName)) (AppT (ConT columntypeName) (ConT pgTypeName))) [func2]
-        in [instD1, instD2]
+        in [instD1, instD2] 
 
 makeAdaptorAndInstances :: Env -> Q [Dec]
 makeAdaptorAndInstances env = runReaderT (do
