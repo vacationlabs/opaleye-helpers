@@ -21,6 +21,7 @@ import Control.Monad.IO.Class
 import Control.Monad
 import Data.Char
 import Data.Maybe
+import Data.List
 import Data.Profunctor.Product.TH (makeAdaptorAndInstance)
 import Data.Profunctor.Product.Default
 import Opaleye
@@ -33,11 +34,11 @@ import Control.Monad.Trans.Reader
 
 data Options = Options { tableOptions :: [(String, TableOptions)] }
 
-data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, String)], generateInstancesFor :: [String] }
+data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, String)], skipInstancesFor :: [String] }
 
 type ColumnType = String
 
-data ColumnInfo = ColumnInfo { columnTableName :: String, columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool}
+data ColumnInfo = ColumnInfo { columnTableName :: String, columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool} deriving (Show)
 
 testFunc2 :: ReaderT () Q (Maybe Name)
 testFunc2 = lift $ lookupTypeName "wewq" 
@@ -271,7 +272,24 @@ makeOpaleyeModels env = runReaderT (do
   (_, options) <- ask
   let names = fst <$> tableOptions options
   let models = (modelName.snd) <$> tableOptions options
-  concat <$> zipWithM makeOpaleyeModel names models) env
+  instances <- makeInstances
+  decs <- concat <$> zipWithM makeOpaleyeModel names models
+  return $ decs ++ instances) env
+
+collectNewTypes :: EnvM [(ColumnInfo, String)]
+collectNewTypes = do
+  (connInfo, options) <- ask
+  concat <$> mapM getNewTypes (tableOptions options)
+  where
+    getNewTypes :: (String, TableOptions) -> EnvM [(ColumnInfo, String)]
+    getNewTypes (tbName, tbOptions) = do
+      (connectInfo, _) <- ask
+      fieldInfos <- (lift.runIO) $ do
+        conn <- connect connectInfo
+        getColumns conn tbName
+      return $ fromJust <$> (filter isJust $ (tryNewType tbOptions) <$> fieldInfos)
+    tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, String)
+    tryNewType to ci = (\n -> (ci, n)) <$> lookup (columnName ci) (overrideDefaultTypes to)
 
 makeNewTypes :: Env -> Q [Dec]
 makeNewTypes env = runReaderT makeNewTypes' env
@@ -282,19 +300,6 @@ makeNewTypes env = runReaderT makeNewTypes' env
     (a, b) <- foldM makeNewType ([], []) nts
     return b
     where
-    collectNewTypes :: EnvM [(ColumnInfo, String)]
-    collectNewTypes = do
-      (connInfo, options) <- ask
-      concat <$> mapM getNewTypes (tableOptions options)
-    getNewTypes :: (String, TableOptions) -> EnvM [(ColumnInfo, String)]
-    getNewTypes (tbName, tbOptions) = do
-      (connectInfo, _) <- ask
-      fieldInfos <- (lift.runIO) $ do
-        conn <- connect connectInfo
-        getColumns conn tbName
-      return $ fromJust <$> (filter isJust $ (tryNewType tbOptions) <$> fieldInfos)
-    tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, String)
-    tryNewType to ci = (\n -> (ci, n)) <$> lookup (columnName ci) (overrideDefaultTypes to)
     makeNewType :: ([String], [Dec]) -> (ColumnInfo, String) -> EnvM ([String], [Dec])
     makeNewType (added, decs) (ci, nt_name) = do
       if nt_name `elem` added then (return (added, decs)) else do
@@ -344,8 +349,7 @@ makeOpaleyeModel t r = do
   haskell <- makeHaskellAlias (mkName r) recordPolyName fieldInfos
   pgRead <- makePgReadAlias (mkName $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ makePGWriteTypeName r) recordPolyName fieldInfos
-  instances <- makeInstances t
-  return $ [rec, haskell, pgRead, pgWrite] ++ instances
+  return $ [rec, haskell, pgRead, pgWrite]
   where
     addPrefix :: String -> String -> String
     addPrefix pre (s:ss) = "_" ++ (toLower <$> pre) ++ (toUpper s:ss)
@@ -380,30 +384,31 @@ makeOpaleyeModel t r = do
         makeBangType :: (Name, Name) -> VarBangType
         makeBangType (fieldName, name) = let bang = Bang NoSourceUnpackedness NoSourceStrictness in (fieldName, bang, VarT name)
 
-makeInstances :: String -> EnvM [Dec]
-makeInstances t = do
-  (connectInfo, _) <- ask
-  fieldInfos <- (lift.runIO) $ do
-    conn <- connect connectInfo
-    getColumns conn t
-  newTypeFields <- filterM (\x -> fmap isJust $ lookupNewtypeForField x) fieldInfos
-  concat <$> (mapM makeInstancesForColumn newTypeFields)
+makeInstances :: EnvM [Dec]
+makeInstances = do
+  newTypes <- groupDups <$> collectNewTypes
+  lift $ runIO $ putStrLn $ show $ newTypes
+  concat <$> (mapM makeInstancesForColumn newTypes)
+  where
+    groupDups :: [(ColumnInfo, String)] -> [ColumnInfo]
+    groupDups pairs = fmap collect $ nub $ fmap snd pairs
+      where
+        collect :: String -> ColumnInfo
+        collect tn = fromJust $ lookup tn $ swapped
+        swapped :: [(String, ColumnInfo)]
+        swapped = fmap swap pairs
+        swap :: (a, b) -> (b, a)
+        swap (x, y) = (y, x)
 
 getTableOptions :: String -> Options -> TableOptions
 getTableOptions tname options = fromJust $ lookup tname (tableOptions options)
 
 makeInstancesForColumn :: ColumnInfo -> EnvM [Dec]
 makeInstancesForColumn ci = do
-  (_, options) <- ask
-  nt <- lookupNewtypeForField ci
-  case nt of 
-    Nothing -> return []
-    Just x -> if (nameBase x) `elem` (generateInstancesFor $ getTableOptions (columnTableName ci) options) then (do
-                fromFieldInstance <- makeFromFieldInstance ci
-                queryRunnerInstance <- makeQueryRunnerInstance ci
-                defaultInstance <- makeDefaultInstance ci
-                return $ fromFieldInstance ++ queryRunnerInstance ++ defaultInstance)
-              else return []
+    fromFieldInstance <- makeFromFieldInstance ci
+    queryRunnerInstance <- makeQueryRunnerInstance ci
+    defaultInstance <- makeDefaultInstance ci
+    return $ fromFieldInstance ++ queryRunnerInstance ++ defaultInstance
   where
     makeFromFieldInstance :: ColumnInfo -> EnvM [Dec]
     makeFromFieldInstance ci = do
