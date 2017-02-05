@@ -6,7 +6,10 @@ module Opaleye.TH (
     , makeOpaleyeTables
     , makeAdaptorAndInstances
     , makeInstances
+    , makeNewTypes
     , makeArrayInstances
+    , Options(..)
+    , TableOptions(..)
     )
 where 
 
@@ -353,6 +356,7 @@ makeOpaleyeModel t r = do
 
 makeInstances :: String -> EnvM [Dec]
 makeInstances t = do
+  (connectInfo, _) <- ask
   fieldInfos <- (lift.runIO) $ do
     conn <- connect connectInfo
     getColumns conn t
@@ -445,5 +449,3 @@ makeAdaptorAndInstances env = runReaderT (do
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (x ++ "Poly")) models
   lift $ concat <$> zipWithM makeAdaptorAndInstance an pn) env
-
-connectInfo = defaultConnectInfo { connectPassword = "postgres", connectDatabase = "scratch"}
