@@ -1,7 +1,14 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings  #-}
 
-module Lib where 
+module Opaleye.TH (
+      makeOpaleyeModels
+    , makeOpaleyeTables
+    , makeAdaptorAndInstances
+    , makeInstances
+    , makeArrayInstances
+    )
+where 
 
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.FromField
@@ -105,6 +112,7 @@ getPGColumnType ct = lift $ (getType ct)
         "_varchar"    -> (AppT pg_array) <$> getType "text"
         "_text"    -> (AppT pg_array) <$> getType "text"
         "_int4"       -> (AppT pg_array) <$> getType "int4"
+        "_int8"       -> (AppT pg_array) <$> getType "int8"
         other         -> error $ "Unimplemented PostgresQL type conversion for " ++ show other
 
 getPGConFuncExp :: Type -> EnvM Exp
