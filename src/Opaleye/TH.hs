@@ -7,7 +7,7 @@ module Opaleye.TH (
     , makeAdaptorAndInstances
     , makeInstances
     , makeNewTypes
-    , makeArrayInstances
+    , makeGeneralInstances
     , Options(..)
     , TableOptions(..)
     )
@@ -59,9 +59,7 @@ getColumns conn tname = do
 lookupNewtypeForField :: ColumnInfo -> EnvM (Maybe Name)
 lookupNewtypeForField ci = do
   (_, options) <- ask
-  case lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options) of
-    Just x -> lift $ lookupTypeName x
-    Nothing -> return Nothing
+  return $ mkName <$> lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options)
 
 makePgType :: ColumnInfo -> EnvM Type
 makePgType ci@(ColumnInfo  _ dbColumnName ct hasDefault isNullable) = do
@@ -179,16 +177,19 @@ getHaskellTypeFor ct = case ct of
     array :: Type
     array = ConT (''Vector)
 
-makeHaskellType :: ColumnInfo -> EnvM Type
-makeHaskellType ci = do
-  nt <- lookupNewtypeForField ci
-  case nt of
-    Nothing -> makeNullable <$> getHaskellTypeFor (columnType ci)
-    Just t -> return $ ConT t
+makeRawHaskellType :: ColumnInfo -> EnvM Type
+makeRawHaskellType ci = do
+    makeNullable <$> getHaskellTypeFor (columnType ci)
   where
     makeNullable :: Type -> Type
     makeNullable typ = if (columnNullable ci) then (AppT (ConT ''Maybe) typ) else typ
 
+makeHaskellType :: ColumnInfo -> EnvM Type
+makeHaskellType ci = do
+  nt <- lookupNewtypeForField ci
+  case nt of
+    Nothing -> makeRawHaskellType ci
+    Just t -> return $ ConT t
 
 makeWriteTypes :: [ColumnInfo] -> EnvM [Type]
 makeWriteTypes fieldInfos = do
@@ -207,7 +208,9 @@ makeOpaleyeTables env = runReaderT (do
   (_, options) <- ask
   let names = fst <$> tableOptions options
   let models = (modelName.snd) <$> tableOptions options
-  concat <$> zipWithM makeOpaleyeTable names models) env
+  general_inst <- lift makeGeneralInstances
+  decs <- concat <$> zipWithM makeOpaleyeTable names models
+  return $ decs ++ general_inst) env
 
 makeOpaleyeTable :: String -> String -> EnvM [Dec]
 makeOpaleyeTable t r = do
@@ -252,8 +255,8 @@ makePGWriteTypeName tn = tn ++ "PGWrite"
 makeAdapterName :: String -> String
 makeAdapterName tn = 'p':tn
 
-makeArrayInstances :: Q [Dec]
-makeArrayInstances = [d|
+makeGeneralInstances :: Q [Dec]
+makeGeneralInstances = [d|
     instance (Typeable b, FromField b, QueryRunnerColumnDefault a b) => (QueryRunnerColumnDefault (PGArray a) (Vector b)) where
       queryRunnerColumnDefault = fieldQueryRunnerColumn
       
@@ -269,12 +272,13 @@ makeArrayInstances = [d|
 
 makeOpaleyeModels :: Env -> Q [Dec]
 makeOpaleyeModels env = runReaderT (do
+  newTypeDecs <- makeNewTypes
   (_, options) <- ask
   let names = fst <$> tableOptions options
   let models = (modelName.snd) <$> tableOptions options
   instances <- makeInstances
   decs <- concat <$> zipWithM makeOpaleyeModel names models
-  return $ decs ++ instances) env
+  return $ newTypeDecs ++ decs ++ instances) env
 
 collectNewTypes :: EnvM [(ColumnInfo, String)]
 collectNewTypes = do
@@ -291,49 +295,46 @@ collectNewTypes = do
     tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, String)
     tryNewType to ci = (\n -> (ci, n)) <$> lookup (columnName ci) (overrideDefaultTypes to)
 
-makeNewTypes :: Env -> Q [Dec]
-makeNewTypes env = runReaderT makeNewTypes' env
+makeNewTypes :: EnvM [Dec]
+makeNewTypes = do
+  nts <- collectNewTypes
+  (a, b) <- foldM makeNewType ([], []) nts
+  return b
   where
-  makeNewTypes' :: EnvM [Dec]
-  makeNewTypes' = do
-    nts <- collectNewTypes
-    (a, b) <- foldM makeNewType ([], []) nts
-    return b
+  makeNewType :: ([String], [Dec]) -> (ColumnInfo, String) -> EnvM ([String], [Dec])
+  makeNewType (added, decs) (ci, nt_name) = do
+    if nt_name `elem` added then (return (added, decs)) else do
+      dec <- makeNewType' nt_name
+      if (columnNullable ci) then (do
+        ins <- makeDefaultInstanceForNullable nt_name
+        return (nt_name:added, dec:(ins++decs))
+        ) else return (nt_name:added, dec:decs)
     where
-    makeNewType :: ([String], [Dec]) -> (ColumnInfo, String) -> EnvM ([String], [Dec])
-    makeNewType (added, decs) (ci, nt_name) = do
-      if nt_name `elem` added then (return (added, decs)) else do
-        dec <- makeNewType' nt_name
-        if (columnNullable ci) then (do
-          ins <- makeDefaultInstanceForNullable nt_name
-          return (nt_name:added, dec:(ins++decs))
-          ) else return (nt_name:added, dec:decs)
-      where
-        makeDefaultInstanceForNullable :: String -> EnvM [Dec]
-        makeDefaultInstanceForNullable name = do
-          argname <- lift $ newName "x"
-          let code = return $ ConT $ mkName name
-          let conp = do
-                jp <- [p|Just $(return $ VarP argname) |]
-                return $ ConP (mkName name) [jp]
-          let conp_empty = do
-                jp <- [p|Nothing|]
-                return $ ConP (mkName name) [jp]
-          lift $ [d|
-            instance Default Constant $(code) (Column (Nullable $(code))) where
-              def = Constant f
-                where
-                  f :: $(code) -> Column (Nullable $(code))
-                  f $(conp_empty) = Opaleye.null
-                  f $(conp) = toNullable $ unsafeCoerceColumn $ pgStrictText $(return $ VarE argname)
-            instance (QueryRunnerColumnDefault (Nullable $(code)) $(code)) where
-              queryRunnerColumnDefault = fieldQueryRunnerColumn
-            |]
-        makeNewType' :: String -> EnvM Dec
-        makeNewType' name = do
-          let bang = Bang NoSourceUnpackedness NoSourceStrictness
-          haskellType <- makeHaskellType ci
-          return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show]
+      makeDefaultInstanceForNullable :: String -> EnvM [Dec]
+      makeDefaultInstanceForNullable name = do
+        argname <- lift $ newName "x"
+        let code = return $ ConT $ mkName name
+        let conp = do
+              jp <- [p|Just $(return $ VarP argname) |]
+              return $ ConP (mkName name) [jp]
+        let conp_empty = do
+              jp <- [p|Nothing|]
+              return $ ConP (mkName name) [jp]
+        lift $ [d|
+          instance Default Constant $(code) (Column (Nullable $(code))) where
+            def = Constant f
+              where
+                f :: $(code) -> Column (Nullable $(code))
+                f $(conp_empty) = Opaleye.null
+                f $(conp) = toNullable $ unsafeCoerceColumn $ pgStrictText $(return $ VarE argname)
+          instance (QueryRunnerColumnDefault (Nullable $(code)) $(code)) where
+            queryRunnerColumnDefault = fieldQueryRunnerColumn
+          |]
+      makeNewType' :: String -> EnvM Dec
+      makeNewType' name = do
+        let bang = Bang NoSourceUnpackedness NoSourceStrictness
+        haskellType <- makeRawHaskellType ci
+        return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show]
     
 makeOpaleyeModel :: String -> String -> EnvM [Dec]
 makeOpaleyeModel t r = do
@@ -412,7 +413,7 @@ makeInstancesForColumn ci = do
     makeFromFieldInstance :: ColumnInfo -> EnvM [Dec]
     makeFromFieldInstance ci = do
       Just pgTypeName <- lookupNewtypeForField ci
-      Just pgValueConstructor <- lift $ lookupValueName (nameBase pgTypeName)
+      let pgValueConstructor = (mkName $ nameBase pgTypeName)
       Just fmapName <- lift $ lookupValueName "fmap"
       Just fromFieldName <- lift $ lookupValueName "fromField"
       Just fromFieldClassName <- lift $ lookupTypeName "FromField"
@@ -445,7 +446,7 @@ makeInstancesForColumn ci = do
       Just constantConName <- lift $ lookupValueName "Constant"
       Just fmapName <- lift $ lookupValueName "fmap"
       Just pgTypeName <- lookupNewtypeForField ci
-      Just pgTypeCon <- lift $ lookupValueName $ nameBase pgTypeName
+      let pgTypeCon = mkName $ nameBase pgTypeName
       pgConFuncExp <- getPGConFuncExp pgDefColType
       let func1 = let
             body = AppE (ConE constantConName) (VarE $ mkName "f") 
