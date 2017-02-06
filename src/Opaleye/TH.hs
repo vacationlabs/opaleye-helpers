@@ -387,7 +387,6 @@ makeOpaleyeModel t r = do
 makeInstances :: EnvM [Dec]
 makeInstances = do
   newTypes <- groupDups <$> collectNewTypes
-  lift $ runIO $ putStrLn $ show $ newTypes
   concat <$> (mapM makeInstancesForColumn newTypes)
   where
     groupDups :: [(ColumnInfo, String)] -> [ColumnInfo]
