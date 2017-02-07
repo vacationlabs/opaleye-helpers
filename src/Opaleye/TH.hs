@@ -71,7 +71,6 @@ makePgType ci@(ColumnInfo  _ dbColumnName ct hasDefault isNullable) = do
         Just pgType -> do
           return $ makeFinalType columnName n (ConT pgType)
         Nothing -> do
-          --let columnTypeName = getPGColumnTypeName ct
           pgType <- getPGColumnType ct
           return $ makeFinalType columnName n pgType
   where
@@ -180,7 +179,7 @@ makeRawHaskellType ci = do
     makeNullable <$> getHaskellTypeFor (columnType ci)
   where
     makeNullable :: Type -> Type
-    makeNullable typ = if (columnNullable ci) then (AppT (ConT ''Maybe) typ) else typ
+    makeNullable typ = typ
 
 makeHaskellType :: ColumnInfo -> EnvM Type
 makeHaskellType ci = do
@@ -206,9 +205,7 @@ makeOpaleyeTables env = runReaderT (do
   (_, options) <- ask
   let names = fst <$> tableOptions options
   let models = (modelName.snd) <$> tableOptions options
-  general_inst <- lift makeGeneralInstances
-  decs <- concat <$> zipWithM makeOpaleyeTable names models
-  return $ decs ++ general_inst) env
+  concat <$> zipWithM makeOpaleyeTable names models) env
 
 makeOpaleyeTable :: String -> String -> EnvM [Dec]
 makeOpaleyeTable t r = do
@@ -252,30 +249,6 @@ makePGWriteTypeName tn = tn ++ "PGWrite"
 
 makeAdapterName :: String -> String
 makeAdapterName tn = 'p':tn
-
-makeGeneralInstances :: Q [Dec]
-makeGeneralInstances = [d|
-    instance (Typeable b, FromField b, QueryRunnerColumnDefault a b) => (QueryRunnerColumnDefault (PGArray a) (Vector b)) where
-      queryRunnerColumnDefault = fieldQueryRunnerColumn
-      
-    instance (IsSqlType b, Default Constant a (Column b)) => Default Constant (Vector a) (Column (PGArray b)) where
-      def = Constant f
-        where
-          f ::(IsSqlType b, Default Constant a (Column b)) =>  Vector a -> Column (PGArray b)
-          f x = pgArray constant (toList x)
-
-    instance (IsSqlType b, Default Constant a (Column b)) => Default Constant (Vector a) (Column (Nullable (PGArray b))) where
-      def = toNullable <$> def
-
-    instance (Default Constant Value (Column (Nullable PGJsonb))) where
-      def = toNullable <$> def
-
-    instance (Default Constant Value (Maybe (Column PGJsonb))) where
-      def = Just <$> def
-
-    instance (Default Constant Value (Maybe (Column (Nullable PGJsonb)))) where
-      def = Just <$> def
-  |]
 
 makeOpaleyeModels :: Env -> Q [Dec]
 makeOpaleyeModels env = runReaderT (do
@@ -407,6 +380,8 @@ makeNewtypeInstances = do
               queryRunnerColumnDefault = fieldQueryRunnerColumn
             instance QueryRunnerColumnDefault $(return $ ConT ntName) $(ntNameQ) where
               queryRunnerColumnDefault = fieldQueryRunnerColumn
+            instance QueryRunnerColumnDefault (Nullable $(return $ ConT ntName)) $(ntNameQ) where
+              queryRunnerColumnDefault = fieldQueryRunnerColumn
             |]
         makeDefaultInstance :: ColumnInfo -> Name -> EnvM [Dec]
         makeDefaultInstance ci ntName = do
@@ -417,38 +392,59 @@ makeNewtypeInstances = do
             then
               (makeDefaultInstanceForNullable ci ntName)
             else 
-              lift [d|
-                instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
-                  def = Constant f
-                    where
-                    f ($(return $ ConP ntName $ [VarP $ mkName "x"])) = $(return pgConFuncExp) x
-                instance Default Constant $(ntNameQ) (Column $(ntNameQ)) where
-                  def = f <$> def
-                    where
-                    f :: Column $(return pgDefColType) -> Column $(ntNameQ)
-                    f  = unsafeCoerceColumn
-                |] 
+              if (columnDefault ci) 
+                then
+                  lift [d|
+                    instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
+                      def = Constant f
+                        where
+                        f ($(return $ ConP ntName $ [VarP $ mkName "x"])) = $(return pgConFuncExp) x
+                    instance Default Constant $(ntNameQ) (Column $(ntNameQ)) where
+                      def = f <$> def
+                        where
+                        f :: Column $(return pgDefColType) -> Column $(ntNameQ)
+                        f  = unsafeCoerceColumn
+                    |] 
+                else
+                  lift [d|
+                    instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
+                      def = Constant f
+                        where
+                        f ($(return $ ConP ntName $ [VarP $ mkName "x"])) = $(return pgConFuncExp) x
+                    instance Default Constant (Maybe $(ntNameQ)) (Column $(return pgDefColType)) where
+                      def = Constant f
+                        where
+                        f (Just ($(return $ ConP ntName $ [VarP $ mkName "x"]))) = $(return pgConFuncExp) x
+                    instance Default Constant $(ntNameQ) (Column $(ntNameQ)) where
+                      def = f <$> def
+                        where
+                        f :: Column $(return pgDefColType) -> Column $(ntNameQ)
+                        f  = unsafeCoerceColumn
+                    |] 
         makeDefaultInstanceForNullable :: ColumnInfo -> Name -> EnvM [Dec]
         makeDefaultInstanceForNullable ci ntName = do
           argname <- lift $ newName "x"
           pgDefColType <- getPGColumnType(columnType ci)
           pgConFuncExp <- getPGConFuncExp pgDefColType
           let ntNameQ = return $ ConT ntName
-          let conp = do
-                jp <- [p|Just $(return $ VarP argname) |]
-                return $ ConP ntName [jp]
-          let conp_empty = do
-                jp <- [p|Nothing|]
-                return $ ConP ntName [jp]
           lift $ [d|
-            instance Default Constant $(ntNameQ) (Column (Nullable $(ntNameQ))) where
+            instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
               def = Constant f
                 where
-                  f :: $(ntNameQ) -> Column (Nullable $(ntNameQ))
-                  f $(conp_empty) = Opaleye.null
-                  f $(conp) = toNullable $ unsafeCoerceColumn $ $(return pgConFuncExp) $(return $ VarE argname)
-            instance (QueryRunnerColumnDefault (Nullable $(ntNameQ)) $(ntNameQ)) where
-              queryRunnerColumnDefault = fieldQueryRunnerColumn
+                f ($(return $ ConP ntName $ [VarP $ mkName "x"])) = $(return pgConFuncExp) x
+            instance Default Constant $(ntNameQ) (Column $(ntNameQ)) where
+              def = f <$> def
+                where
+                f :: Column $(return pgDefColType) -> Column $(ntNameQ)
+                f  = unsafeCoerceColumn
+            instance Default Constant $(return $ ConT ntName) (Column (Nullable $(return pgDefColType))) where
+              def = Constant (\($(return $ ConP ntName [VarP $ mkName "x"])) -> toNullable $ $(return pgConFuncExp) x)
+
+            instance Default Constant $(ntNameQ) (Column (Nullable $(ntNameQ))) where
+              def = f <$> def
+                where
+                f :: Column $(return pgDefColType) -> Column (Nullable $(ntNameQ))
+                f  = toNullable.unsafeCoerceColumn
             |]
 
 getTableOptions :: String -> Options -> TableOptions
