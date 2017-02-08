@@ -176,10 +176,7 @@ getHaskellTypeFor ct = case ct of
 
 makeRawHaskellType :: ColumnInfo -> EnvM Type
 makeRawHaskellType ci = do
-    makeNullable <$> getHaskellTypeFor (columnType ci)
-  where
-    makeNullable :: Type -> Type
-    makeNullable typ = typ
+    getHaskellTypeFor (columnType ci)
 
 makeHaskellType :: ColumnInfo -> EnvM Type
 makeHaskellType ci = do
@@ -187,7 +184,7 @@ makeHaskellType ci = do
   typ <- case nt of
     Nothing -> makeRawHaskellType ci
     Just t -> return $ ConT t
-  return $ if (columnDefault ci) then (AppT (ConT ''Maybe) typ) else typ
+  return $ if (columnNullable ci) then (AppT (ConT ''Maybe) typ) else typ
 
 makeWriteTypes :: [ColumnInfo] -> EnvM [Type]
 makeWriteTypes fieldInfos = do
