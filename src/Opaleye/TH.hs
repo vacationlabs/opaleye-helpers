@@ -26,6 +26,7 @@ import Data.Text (Text)
 import Data.Vector (Vector)
 import Data.Typeable
 import Data.Aeson
+import GHC.Int
 
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
@@ -36,7 +37,7 @@ data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: 
 
 type ColumnType = String
 
-data ColumnInfo = ColumnInfo { columnTableName :: String, columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool} deriving (Show)
+data ColumnInfo = ColumnInfo { columnTableName :: String, columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool, columnPrimary :: Bool} deriving (Show)
 
 testFunc2 :: ReaderT () Q (Maybe Name)
 testFunc2 = lift $ lookupTypeName "wewq" 
@@ -46,13 +47,25 @@ type EnvM a = ReaderT Env Q a
 
 getColumns :: Connection -> String -> IO [ColumnInfo]
 getColumns conn tname = do
-  field_rows <- query conn
-    "select column_name, udt_name, column_default, is_nullable from information_schema.columns where table_name = ?" 
-    (Only tname) :: IO [(String, String, Maybe String, String)]
+  field_rows <- query conn "SELECT \
+      \ c.column_name, c.udt_name, c.column_default, c.is_nullable, (array_agg(tc.constraint_type::text) @> ARRAY ['PRIMARY KEY']) as is_primary\
+      \ FROM\
+      \ information_schema.columns AS c \
+      \ left join\
+      \   information_schema.constraint_column_usage as ccu on\
+      \     c.table_catalog = ccu.table_catalog and\
+      \     c.table_schema = ccu.table_schema and\
+      \     c.table_name  = ccu.table_name and\
+      \     c.column_name = ccu.column_name\
+      \ left join information_schema.table_constraints tc on\
+      \   c.table_schema = tc. constraint_schema and\
+      \   tc.table_name = c.table_name and\
+      \   tc.constraint_name = ccu.constraint_name\
+      \ where c.table_name = ? group by c.column_name,c.udt_name, c.column_default, c.is_nullable" (Only tname) :: IO [(String, String, Maybe String, String, Bool)]
   return $ makeColumnInfo <$> field_rows
   where
-    makeColumnInfo :: (String, String, Maybe String, String) -> ColumnInfo
-    makeColumnInfo (name, ctype, hasDefault, isNullable) = ColumnInfo tname name ctype (isJust hasDefault) (isNullable == "YES")
+    makeColumnInfo :: (String, String, Maybe String, String, Bool) -> ColumnInfo
+    makeColumnInfo (name, ctype, hasDefault, isNullable, isPrimary) = ColumnInfo tname name ctype (isJust hasDefault) (isNullable == "YES") isPrimary
 
 lookupNewtypeForField :: ColumnInfo -> EnvM (Maybe Name)
 lookupNewtypeForField ci = do
@@ -60,7 +73,7 @@ lookupNewtypeForField ci = do
   return $ mkName <$> lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options)
 
 makePgType :: ColumnInfo -> EnvM Type
-makePgType ci@(ColumnInfo  _ dbColumnName ct hasDefault isNullable) = do
+makePgType ci@(ColumnInfo  _ dbColumnName ct hasDefault isNullable isPrimary) = do
   c <- lift $ lookupTypeName "Column"
   case c of
     Nothing -> error "Couldn't find opaleye's 'Column' type in scope. Have you imported Opaleye module?"
@@ -208,6 +221,7 @@ makeOpaleyeTables env = runReaderT (do
 makeOpaleyeTable :: String -> String -> EnvM [Dec]
 makeOpaleyeTable t r = do
   (connectInfo, _) <- ask
+  functions <- makeFunctions
   lift $ do
     fieldInfos <- runIO $ do
       conn <- connect connectInfo
@@ -218,7 +232,7 @@ makeOpaleyeTable t r = do
     Just tableFunctionName <- lookupValueName "Table"
     Just pgWriteTypeName <- lookupTypeName $ makePGWriteTypeName r
     Just pgReadTypeName <- lookupTypeName $ makePGReadTypeName r
-    let funcName = mkName $ t ++ "Table"
+    let funcName = mkName $ makeTablename t 
     let funcType = AppT (AppT (ConT tableTypeName) (ConT pgWriteTypeName)) (ConT pgReadTypeName)
     let signature = SigD funcName funcType
     fieldExps <- (getTableTypes fieldInfos)
@@ -226,7 +240,7 @@ makeOpaleyeTable t r = do
       funcExp = AppE (AppE (ConE tableFunctionName) (LitE $ StringL t)) funcExp2
       funcExp2 = AppE (VarE adapterFunc) funcExp3
       funcExp3 = foldl AppE (ConE constructor) fieldExps
-      in return [signature, FunD funcName [Clause [] (NormalB funcExp) []]]
+      in return $ [signature, FunD funcName [Clause [] (NormalB funcExp) []]] ++ functions
   where
     getTableTypes :: [ColumnInfo] -> Q [Exp]
     getTableTypes fieldInfos = do
@@ -238,6 +252,24 @@ makeOpaleyeTable t r = do
         mkExp rq op ci = let 
                            ty = if (columnDefault ci) then op else rq 
                          in AppE (VarE ty) (LitE $ StringL $ columnName ci)
+    makeFunctions :: EnvM [Dec]
+    makeFunctions = do
+      insertions <- makeInsertFunction
+      return insertions
+    makeInsertFunction :: EnvM [Dec]
+    makeInsertFunction = lift $ do
+      body <- [e| runInsert conn $(return $ VarE $ mkName $ makeTablename t) (constant x) 
+        |]
+      sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO Int64 |]
+      let
+        functionName = mkName $ "insertInto" ++ t
+        clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
+        sigd = SigD (functionName) sigType
+        fund = FunD functionName [clause]
+      return $ [sigd, fund]
+    
+makeTablename :: String -> String
+makeTablename t = t ++ "Table"
 
 makePGReadTypeName :: String -> String
 makePGReadTypeName tn = tn ++ "PGRead"
@@ -374,25 +406,13 @@ makeNewtypeInstances = do
           pgDefColType <- getPGColumnType (columnType ci)
           let ntNameQ = return $ ConT ntName
           lift $ do
-            nullableIns <- if (columnNullable ci) then [d|
-              instance QueryRunnerColumnDefault (Nullable $(return $ ConT ntName)) $(ntNameQ) where
-                queryRunnerColumnDefault = fieldQueryRunnerColumn
-                |]
-            else
-              return []
-            optionalIns <- if (columnDefault ci) then [d|
-              instance QueryRunnerColumnDefault (ntNameQ) (Maybe $(ntNameQ)) where
-                queryRunnerColumnDefault = fieldQueryRunnerColumn
-                |]
-            else
-              return []
             common <- [d|
               instance QueryRunnerColumnDefault $(return pgDefColType) $(ntNameQ) where
                 queryRunnerColumnDefault = fieldQueryRunnerColumn
               instance QueryRunnerColumnDefault $(return $ ConT ntName) $(ntNameQ) where
                 queryRunnerColumnDefault = fieldQueryRunnerColumn
               |]
-            return $ nullableIns ++ optionalIns ++ common
+            return $ common
         makeDefaultInstance :: ColumnInfo -> Name -> EnvM [Dec]
         makeDefaultInstance ci ntName = do
           pgDefColType <- getPGColumnType(columnType ci)
@@ -403,8 +423,19 @@ makeNewtypeInstances = do
               (makeDefaultInstanceForNullable ci ntName)
             else 
               if (columnDefault ci) 
-                then
-                  lift [d|
+                then lift $ do
+                  -- For primary keys, the following instance saves from having to make the key
+                  -- a Just value to insert into it.
+                  instance_prim <- if (columnPrimary ci) 
+                    then
+                      [d|
+                        instance Default Constant $(ntNameQ) (Maybe (Column $(ntNameQ))) where
+                          def = Constant f
+                            where
+                            f ($(return $ ConP ntName $ [VarP $ mkName "x"])) = Just $ unsafeCoerceColumn $ $(return pgConFuncExp) x
+                        |]
+                    else return []
+                  ins <- [d|
                     instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
                       def = Constant f
                         where
@@ -415,6 +446,7 @@ makeNewtypeInstances = do
                         f :: Column $(return pgDefColType) -> Column $(ntNameQ)
                         f  = unsafeCoerceColumn
                     |] 
+                  return $ ins ++ instance_prim
                 else
                   lift [d|
                     instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
@@ -469,3 +501,4 @@ makeAdaptorAndInstances env = runReaderT (do
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (x ++ "Poly")) models
   lift $ concat <$> zipWithM makeAdaptorAndInstance an pn) env
+
