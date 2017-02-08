@@ -255,7 +255,8 @@ makeOpaleyeTable t r = do
     makeFunctions :: EnvM [Dec]
     makeFunctions = do
       insertions <- makeInsertFunction
-      return insertions
+      updation <- makeUpdateFunction
+      return (insertions ++ updation)
     makeInsertFunction :: EnvM [Dec]
     makeInsertFunction = lift $ do
       body <- [e| runInsertManyReturning conn $(return $ VarE $ mkName $ makeTablename t) (constant <$> x) id
@@ -267,7 +268,29 @@ makeOpaleyeTable t r = do
         sigd = SigD (functionName) sigType
         fund = FunD functionName [clause]
       return $ [sigd, fund]
-    
+    makeUpdateFunction :: EnvM [Dec]
+    makeUpdateFunction = do
+      Just pField <- getPrimaryKeyField t r
+      lift $ do
+        body <- [e| runUpdateReturning conn $(return $ VarE $ mkName $ makeTablename t) (\_ -> constant x) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) x)) id
+          |]
+        sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO [$(return (ConT $ mkName r))] |]
+        let
+          functionName = mkName $ "updateIn" ++ t
+          clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
+          sigd = SigD (functionName) sigType
+          fund = FunD functionName [clause]
+        return $ [sigd, fund]
+      where
+        getPrimaryKeyField :: String -> String -> EnvM (Maybe String)
+        getPrimaryKeyField tname modelName = do
+          (connectInfo, _) <- ask
+          fieldInfos <- (lift.runIO) $ do
+            conn <- connect connectInfo
+            getColumns conn tname
+          let [primaryField] = (filter (\ci -> columnPrimary ci)) fieldInfos
+          return $ Just $ makeFieldName modelName (columnName primaryField)
+      
 makeTablename :: String -> String
 makeTablename t = t ++ "Table"
 
@@ -322,6 +345,9 @@ makeNewTypes = do
         let bang = Bang NoSourceUnpackedness NoSourceStrictness
         haskellType <- makeRawHaskellType ci
         return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show]
+
+makeFieldName :: String -> String -> String
+makeFieldName tablename (s:ss) = "_" ++ (toLower <$> tablename) ++ (toUpper s:ss)
     
 makeOpaleyeModel :: String -> String -> EnvM [Dec]
 makeOpaleyeModel t r = do
@@ -333,14 +359,12 @@ makeOpaleyeModel t r = do
     getColumns conn t
   deriveShow <- lift $ [t| Show |]
   fields <- mapM (lift.newName.columnName) fieldInfos
-  let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(addPrefix r).columnName <$> fieldInfos) fields] [deriveShow]
+  let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] [deriveShow]
   haskell <- makeHaskellAlias (mkName r) recordPolyName fieldInfos
   pgRead <- makePgReadAlias (mkName $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ makePGWriteTypeName r) recordPolyName fieldInfos
   return $ [rec, haskell, pgRead, pgWrite]
   where
-    addPrefix :: String -> String -> String
-    addPrefix pre (s:ss) = "_" ++ (toLower <$> pre) ++ (toUpper s:ss)
     makeHaskellAlias :: Name -> Name -> [ColumnInfo] -> EnvM Dec
     makeHaskellAlias hname poly_name fieldInfos = do
       types <- makeHaskellTypes fieldInfos
