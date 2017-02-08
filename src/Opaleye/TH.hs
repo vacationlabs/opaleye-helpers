@@ -437,14 +437,6 @@ makeNewtypeInstances = do
                 where
                 f :: Column $(return pgDefColType) -> Column $(ntNameQ)
                 f  = unsafeCoerceColumn
-            instance Default Constant $(return $ ConT ntName) (Column (Nullable $(return pgDefColType))) where
-              def = Constant (\($(return $ ConP ntName [VarP $ mkName "x"])) -> toNullable $ $(return pgConFuncExp) x)
-
-            instance Default Constant $(ntNameQ) (Column (Nullable $(ntNameQ))) where
-              def = f <$> def
-                where
-                f :: Column $(return pgDefColType) -> Column (Nullable $(ntNameQ))
-                f  = toNullable.unsafeCoerceColumn
             |]
 
 getTableOptions :: String -> Options -> TableOptions
