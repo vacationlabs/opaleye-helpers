@@ -184,9 +184,10 @@ makeRawHaskellType ci = do
 makeHaskellType :: ColumnInfo -> EnvM Type
 makeHaskellType ci = do
   nt <- lookupNewtypeForField ci
-  case nt of
+  typ <- case nt of
     Nothing -> makeRawHaskellType ci
     Just t -> return $ ConT t
+  return $ if (columnDefault ci) then (AppT (ConT ''Maybe) typ) else typ
 
 makeWriteTypes :: [ColumnInfo] -> EnvM [Type]
 makeWriteTypes fieldInfos = do
@@ -375,14 +376,26 @@ makeNewtypeInstances = do
         makeQueryRunnerInstance ci ntName = do
           pgDefColType <- getPGColumnType (columnType ci)
           let ntNameQ = return $ ConT ntName
-          lift $ [d|
-            instance QueryRunnerColumnDefault $(return pgDefColType) $(ntNameQ) where
-              queryRunnerColumnDefault = fieldQueryRunnerColumn
-            instance QueryRunnerColumnDefault $(return $ ConT ntName) $(ntNameQ) where
-              queryRunnerColumnDefault = fieldQueryRunnerColumn
-            instance QueryRunnerColumnDefault (Nullable $(return $ ConT ntName)) $(ntNameQ) where
-              queryRunnerColumnDefault = fieldQueryRunnerColumn
-            |]
+          lift $ do
+            nullableIns <- if (columnNullable ci) then [d|
+              instance QueryRunnerColumnDefault (Nullable $(return $ ConT ntName)) $(ntNameQ) where
+                queryRunnerColumnDefault = fieldQueryRunnerColumn
+                |]
+            else
+              return []
+            optionalIns <- if (columnDefault ci) then [d|
+              instance QueryRunnerColumnDefault (ntNameQ) (Maybe $(ntNameQ)) where
+                queryRunnerColumnDefault = fieldQueryRunnerColumn
+                |]
+            else
+              return []
+            common <- [d|
+              instance QueryRunnerColumnDefault $(return pgDefColType) $(ntNameQ) where
+                queryRunnerColumnDefault = fieldQueryRunnerColumn
+              instance QueryRunnerColumnDefault $(return $ ConT ntName) $(ntNameQ) where
+                queryRunnerColumnDefault = fieldQueryRunnerColumn
+              |]
+            return $ nullableIns ++ optionalIns ++ common
         makeDefaultInstance :: ColumnInfo -> Name -> EnvM [Dec]
         makeDefaultInstance ci ntName = do
           pgDefColType <- getPGColumnType(columnType ci)
@@ -427,17 +440,27 @@ makeNewtypeInstances = do
           pgDefColType <- getPGColumnType(columnType ci)
           pgConFuncExp <- getPGConFuncExp pgDefColType
           let ntNameQ = return $ ConT ntName
-          lift $ [d|
-            instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
-              def = Constant f
-                where
-                f ($(return $ ConP ntName $ [VarP $ mkName "x"])) = $(return pgConFuncExp) x
-            instance Default Constant $(ntNameQ) (Column $(ntNameQ)) where
-              def = f <$> def
-                where
-                f :: Column $(return pgDefColType) -> Column $(ntNameQ)
-                f  = unsafeCoerceColumn
-            |]
+          if (columnDefault ci) 
+            then
+              lift $ [d|
+                instance Default Constant $(ntNameQ) (Column (Nullable $(ntNameQ))) where
+                  def = Constant f
+                    where
+                    f :: $(ntNameQ) -> Column (Nullable $(ntNameQ))
+                    f $(return $ ConP ntName $ [VarP $ mkName "x"]) = toNullable $ unsafeCoerceColumn $ $(return pgConFuncExp) x
+                |]
+            else
+              lift $ [d|
+                instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
+                  def = Constant f
+                    where
+                    f ($(return $ ConP ntName $ [VarP $ mkName "x"])) = $(return pgConFuncExp) x
+                instance Default Constant $(ntNameQ) (Column $(ntNameQ)) where
+                  def = f <$> def
+                    where
+                    f :: Column $(return pgDefColType) -> Column $(ntNameQ)
+                    f  = unsafeCoerceColumn
+                |]
 
 getTableOptions :: String -> Options -> TableOptions
 getTableOptions tname options = fromJust $ lookup tname (tableOptions options)
