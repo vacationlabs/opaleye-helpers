@@ -258,9 +258,9 @@ makeOpaleyeTable t r = do
       return insertions
     makeInsertFunction :: EnvM [Dec]
     makeInsertFunction = lift $ do
-      body <- [e| runInsert conn $(return $ VarE $ mkName $ makeTablename t) (constant x) 
+      body <- [e| runInsertManyReturning conn $(return $ VarE $ mkName $ makeTablename t) (constant <$> x) id
         |]
-      sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO Int64 |]
+      sigType <- [t| Connection -> [$(return (ConT $ mkName r))] -> IO [$(return (ConT $ mkName r))] |]
       let
         functionName = mkName $ "insertInto" ++ t
         clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
