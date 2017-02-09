@@ -256,12 +256,13 @@ makeOpaleyeTable t r = do
     makeFunctions = do
       insertions <- makeInsertFunction
       updation <- makeUpdateFunction
-      return (insertions ++ updation)
+      deletion <- makeDeleteFunction
+      return (insertions ++ updation ++ deletion)
     makeInsertFunction :: EnvM [Dec]
     makeInsertFunction = lift $ do
-      body <- [e| runInsertManyReturning conn $(return $ VarE $ mkName $ makeTablename t) (constant <$> x) id
+      body <- [e| Prelude.head <$> (runInsertManyReturning conn $(return $ VarE $ mkName $ makeTablename t) [(constant x)] id)
         |]
-      sigType <- [t| Connection -> [$(return (ConT $ mkName r))] -> IO [$(return (ConT $ mkName r))] |]
+      sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO $(return (ConT $ mkName r)) |]
       let
         functionName = mkName $ "insertInto" ++ t
         clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
@@ -283,17 +284,31 @@ makeOpaleyeTable t r = do
             fund = FunD functionName [clause]
           return $ [sigd, fund]
         Nothing -> return []
-      where
-        getPrimaryKeyField :: String -> String -> EnvM (Maybe String)
-        getPrimaryKeyField tname modelName = do
-          (connectInfo, _) <- ask
-          fieldInfos <- (lift.runIO) $ do
-            conn <- connect connectInfo
-            getColumns conn tname
-          return $ case (filter (\ci -> columnPrimary ci)) fieldInfos of
-            [primaryField] -> Just $ makeFieldName modelName (columnName primaryField)
-            _ -> Nothing
-      
+    makeDeleteFunction :: EnvM [Dec]
+    makeDeleteFunction = do
+      pf <- getPrimaryKeyField t r
+      case pf of
+        Just pField -> lift $ do
+          body <- [e| runDelete conn $(return $ VarE $ mkName $ makeTablename t) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) x)) 
+            |]
+          sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO Int64 |]
+          let
+            functionName = mkName $ "deleteFrom" ++ t
+            clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
+            sigd = SigD (functionName) sigType
+            fund = FunD functionName [clause]
+          return $ [sigd, fund]
+        Nothing -> return []
+    getPrimaryKeyField :: String -> String -> EnvM (Maybe String)
+    getPrimaryKeyField tname modelName = do
+      (connectInfo, _) <- ask
+      fieldInfos <- (lift.runIO) $ do
+        conn <- connect connectInfo
+        getColumns conn tname
+      return $ case (filter (\ci -> columnPrimary ci)) fieldInfos of
+        [primaryField] -> Just $ makeFieldName modelName (columnName primaryField)
+        _ -> Nothing
+  
 makeTablename :: String -> String
 makeTablename t = t ++ "Table"
 
