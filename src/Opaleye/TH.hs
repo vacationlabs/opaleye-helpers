@@ -264,7 +264,7 @@ makeOpaleyeTable t r = do
         |]
       sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO $(return (ConT $ mkName r)) |]
       let
-        functionName = mkName $ "insertInto" ++ t
+        functionName = mkName $ "insertInto" ++ (ucFirst t)
         clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
         sigd = SigD (functionName) sigType
         fund = FunD functionName [clause]
@@ -278,7 +278,7 @@ makeOpaleyeTable t r = do
             |]
           sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO [$(return (ConT $ mkName r))] |]
           let
-            functionName = mkName $ "updateIn" ++ t
+            functionName = mkName $ "updateIn" ++ (ucFirst t)
             clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
             sigd = SigD (functionName) sigType
             fund = FunD functionName [clause]
@@ -293,7 +293,7 @@ makeOpaleyeTable t r = do
             |]
           sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO Int64 |]
           let
-            functionName = mkName $ "deleteFrom" ++ t
+            functionName = mkName $ "deleteFrom" ++ (ucFirst t)
             clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
             sigd = SigD (functionName) sigType
             fund = FunD functionName [clause]
@@ -366,6 +366,9 @@ makeNewTypes = do
 
 makeFieldName :: String -> String -> String
 makeFieldName tablename (s:ss) = "_" ++ (toLower <$> tablename) ++ (toUpper s:ss)
+
+ucFirst :: String -> String
+ucFirst (s:ss) = (toUpper s):ss
     
 makeOpaleyeModel :: String -> String -> EnvM [Dec]
 makeOpaleyeModel t r = do
