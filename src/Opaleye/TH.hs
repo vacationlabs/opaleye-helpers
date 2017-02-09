@@ -270,17 +270,19 @@ makeOpaleyeTable t r = do
       return $ [sigd, fund]
     makeUpdateFunction :: EnvM [Dec]
     makeUpdateFunction = do
-      Just pField <- getPrimaryKeyField t r
-      lift $ do
-        body <- [e| runUpdateReturning conn $(return $ VarE $ mkName $ makeTablename t) (\_ -> constant x) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) x)) id
-          |]
-        sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO [$(return (ConT $ mkName r))] |]
-        let
-          functionName = mkName $ "updateIn" ++ t
-          clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
-          sigd = SigD (functionName) sigType
-          fund = FunD functionName [clause]
-        return $ [sigd, fund]
+      pf <- getPrimaryKeyField t r
+      case pf of
+        Just pField -> lift $ do
+          body <- [e| runUpdateReturning conn $(return $ VarE $ mkName $ makeTablename t) (\_ -> constant x) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) x)) id
+            |]
+          sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO [$(return (ConT $ mkName r))] |]
+          let
+            functionName = mkName $ "updateIn" ++ t
+            clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
+            sigd = SigD (functionName) sigType
+            fund = FunD functionName [clause]
+          return $ [sigd, fund]
+        Nothing -> return []
       where
         getPrimaryKeyField :: String -> String -> EnvM (Maybe String)
         getPrimaryKeyField tname modelName = do
@@ -288,8 +290,9 @@ makeOpaleyeTable t r = do
           fieldInfos <- (lift.runIO) $ do
             conn <- connect connectInfo
             getColumns conn tname
-          let [primaryField] = (filter (\ci -> columnPrimary ci)) fieldInfos
-          return $ Just $ makeFieldName modelName (columnName primaryField)
+          return $ case (filter (\ci -> columnPrimary ci)) fieldInfos of
+            [primaryField] -> Just $ makeFieldName modelName (columnName primaryField)
+            _ -> Nothing
       
 makeTablename :: String -> String
 makeTablename t = t ++ "Table"
