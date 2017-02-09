@@ -216,7 +216,23 @@ makeOpaleyeTables env = runReaderT (do
   (_, options) <- ask
   let names = fst <$> tableOptions options
   let models = (modelName.snd) <$> tableOptions options
-  concat <$> zipWithM makeOpaleyeTable names models) env
+  typeClassDecs <- makeModelTypeClass
+  tables <- concat <$> zipWithM makeOpaleyeTable names models
+  return $ tables ++ typeClassDecs) env
+  where
+    makeModelTypeClass :: EnvM [Dec]
+    makeModelTypeClass = lift $ do
+      Just monadIO <- lookupTypeName "MonadIO"
+      let modelTVar = VarT $ mkName "model"
+      let mTVar = VarT $ mkName "m"
+      insertType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
+      updateType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
+      deleteType <-  [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) Int64 |]
+      let
+        insertSig = SigD (mkName "insertModel") insertType
+        updateSig = SigD (mkName "updateModel") updateType
+        deleteSig = SigD (mkName "deleteModel") deleteType
+      return $ [ClassD [] (mkName "DbModel") [PlainTV $ mkName "model"] [] [insertSig, updateSig, deleteSig]]
 
 makeOpaleyeTable :: String -> String -> EnvM [Dec]
 makeOpaleyeTable t r = do
@@ -254,51 +270,22 @@ makeOpaleyeTable t r = do
                          in AppE (VarE ty) (LitE $ StringL $ columnName ci)
     makeFunctions :: EnvM [Dec]
     makeFunctions = do
-      insertions <- makeInsertFunction
-      updation <- makeUpdateFunction
-      deletion <- makeDeleteFunction
-      return (insertions ++ updation ++ deletion)
-    makeInsertFunction :: EnvM [Dec]
-    makeInsertFunction = lift $ do
-      body <- [e| Prelude.head <$> (runInsertManyReturning conn $(return $ VarE $ mkName $ makeTablename t) [(constant x)] id)
-        |]
-      sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO $(return (ConT $ mkName r)) |]
-      let
-        functionName = mkName $ "insertInto" ++ (ucFirst t)
-        clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
-        sigd = SigD (functionName) sigType
-        fund = FunD functionName [clause]
-      return $ [sigd, fund]
-    makeUpdateFunction :: EnvM [Dec]
-    makeUpdateFunction = do
-      pf <- getPrimaryKeyField t r
-      case pf of
-        Just pField -> lift $ do
-          body <- [e| runUpdateReturning conn $(return $ VarE $ mkName $ makeTablename t) (\_ -> constant x) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) x)) id
-            |]
-          sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO [$(return (ConT $ mkName r))] |]
-          let
-            functionName = mkName $ "updateIn" ++ (ucFirst t)
-            clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
-            sigd = SigD (functionName) sigType
-            fund = FunD functionName [clause]
-          return $ [sigd, fund]
-        Nothing -> return []
-    makeDeleteFunction :: EnvM [Dec]
-    makeDeleteFunction = do
-      pf <- getPrimaryKeyField t r
-      case pf of
-        Just pField -> lift $ do
-          body <- [e| runDelete conn $(return $ VarE $ mkName $ makeTablename t) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) x)) 
-            |]
-          sigType <- [t| Connection -> $(return (ConT $ mkName r)) -> IO Int64 |]
-          let
-            functionName = mkName $ "deleteFrom" ++ (ucFirst t)
-            clause = Clause [VarP $ mkName "conn", VarP $ mkName "x"] (NormalB body) []
-            sigd = SigD (functionName) sigType
-            fund = FunD functionName [clause]
-          return $ [sigd, fund]
-        Nothing -> return []
+      instances <- makeModelInstance
+      --updation <- makeUpdateFunction
+      --deletion <- makeDeleteFunction
+      return instances
+    makeModelInstance :: EnvM [Dec]
+    makeModelInstance = do
+      Just pField <- getPrimaryKeyField t r
+      lift $ do 
+        insertExp <- [e|liftIO $ Prelude.head <$> runInsertManyReturning conn $(return $ VarE $ mkName $ makeTablename t) [(constant model)] id |]
+        updateExp <- [e|liftIO $ Prelude.head <$> runUpdateReturning conn $(return $ VarE $ mkName $ makeTablename t) (\_ -> constant model) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) model)) id |]
+        deleteExp <- [e|liftIO $ runDelete conn $(return $ VarE $ mkName $ makeTablename t) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) model)) |]
+        let pat = [VarP $ mkName "conn", VarP $ mkName "model"]
+        let insertFunc = FunD (mkName "insertModel") [Clause pat (NormalB insertExp) []]
+        let updateFunc = FunD (mkName "updateModel") [Clause pat (NormalB updateExp) []]
+        let deleteFunc = FunD (mkName "deleteModel") [Clause pat (NormalB deleteExp) []]
+        return [InstanceD Nothing [] (AppT (ConT $ mkName "DbModel") (ConT $ mkName r)) [insertFunc, updateFunc, deleteFunc]]
     getPrimaryKeyField :: String -> String -> EnvM (Maybe String)
     getPrimaryKeyField tname modelName = do
       (connectInfo, _) <- ask
