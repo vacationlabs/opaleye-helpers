@@ -218,7 +218,7 @@ makeOpaleyeTables env = runReaderT (do
   let models = (modelName.snd) <$> tableOptions options
   typeClassDecs <- makeModelTypeClass
   tables <- concat <$> zipWithM makeOpaleyeTable names models
-  return $ tables ++ typeClassDecs) env
+  return $ typeClassDecs ++ tables) env
   where
     makeModelTypeClass :: EnvM [Dec]
     makeModelTypeClass = lift $ do
