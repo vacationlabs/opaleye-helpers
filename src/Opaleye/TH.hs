@@ -31,9 +31,11 @@ import GHC.Int
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
 
+import Control.Lens
+
 data Options = Options { tableOptions :: [(String, TableOptions)] }
 
-data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, String)], skipInstancesFor :: [String] }
+data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, String)], skipInstancesFor :: [String], protectedFields :: [String] }
 
 type ColumnType = String
 
@@ -218,7 +220,8 @@ makeOpaleyeTables env = runReaderT (do
   let models = (modelName.snd) <$> tableOptions options
   typeClassDecs <- makeModelTypeClass
   tables <- concat <$> zipWithM makeOpaleyeTable names models
-  return $ typeClassDecs ++ tables) env
+  lenses <- concat <$> zipWithM makeLensesForTable names models
+  return $ typeClassDecs ++ tables ++ lenses) env
   where
     makeModelTypeClass :: EnvM [Dec]
     makeModelTypeClass = lift $ do
@@ -227,12 +230,56 @@ makeOpaleyeTables env = runReaderT (do
       let mTVar = VarT $ mkName "m"
       insertType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
       updateType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
-      deleteType <-  [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) Int64 |]
+      deleteType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) Int64 |]
       let
         insertSig = SigD (mkName "insertModel") insertType
         updateSig = SigD (mkName "updateModel") updateType
         deleteSig = SigD (mkName "deleteModel") deleteType
       return $ [ClassD [] (mkName "DbModel") [PlainTV $ mkName "model"] [] [insertSig, updateSig, deleteSig]]
+
+makeLensesForTable :: String -> String -> EnvM [Dec]
+makeLensesForTable t r = do
+  (connectInfo, options) <- ask
+  case lookup t (tableOptions options) of
+    Just tOptions -> do
+      case protectedFields tOptions of
+        [] -> return []
+        xs -> let pFieldNames = (makeFieldName r) <$> xs in do
+          d1 <- makeLenses' r pFieldNames True
+          d2 <- makeLenses' r pFieldNames False
+          return $ d1 ++ d2
+    Nothing -> return []
+  where
+    makeLenses' :: String -> [String] -> Bool -> EnvM [Dec]
+    makeLenses' modelname protected makeProtected = do
+      lift $ do 
+        let modelTypeName = mkName $ modelname ++ "Poly"
+        case makeProtected of
+          True -> makeProtectedLenses modelTypeName 
+          False -> makeNormalLenses modelTypeName
+      where
+        makeProtectedLenses :: Name -> Q [Dec]
+        makeProtectedLenses modelTypeName = let
+          lr1 = lensRules & lensField .~ protectedFieldNamer
+          lr = (lr1 & generateUpdateableOptics .~ False)
+          in makeLensesWith lr modelTypeName
+        makeNormalLenses :: Name -> Q [Dec]
+        makeNormalLenses modelTypeName = let
+          lr = lensRules & lensField .~ normalFieldNamer
+          in makeLensesWith lr modelTypeName
+        protectedFieldNamer :: Name -> [Name] -> Name -> [DefName]
+        protectedFieldNamer _ _ fname = if elem (nameBase fname) protected
+          then [TopName $ (mkName.makeLenseName) (nameBase fname)]
+          else []
+        normalFieldNamer :: Name -> [Name] -> Name -> [DefName]
+        normalFieldNamer _ _ fname = if (Prelude.not $ elem (nameBase fname) protected)
+          then [TopName $ (mkName.makeLenseName) (nameBase fname)]
+          else []
+        makeLenseName :: String -> String
+        makeLenseName (x:xs) = lcFirst $ drop (length r) xs
+          where
+            lcFirst :: String -> String
+            lcFirst (x:xs) = (toLower x):xs
 
 makeOpaleyeTable :: String -> String -> EnvM [Dec]
 makeOpaleyeTable t r = do
