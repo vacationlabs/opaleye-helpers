@@ -235,18 +235,11 @@ makeOpaleyeTables env = do
     let names = fst <$> tableOptions options
     let models = (modelName.snd) <$> tableOptions options
     typeClassDecs <- makeModelTypeClass
-    genInstances <- makeGeneralInstances
     tables <- concat <$> zipWithM makeOpaleyeTable names models
     lenses <- concat <$> zipWithM makeLensesForTable names models
-    return $ genInstances ++ typeClassDecs ++ tables ++ lenses) env
-  runIO $ putStrLn $ show clg
+    return $ typeClassDecs ++ tables ++ lenses) env
   return decs
   where
-    makeGeneralInstances :: EnvM [Dec]
-    makeGeneralInstances = lift $ [d|
-      instance (Default Constant a (Column b)) => Default Constant a (Maybe (Column b)) where
-        def = Constant (\x -> Just $ constant x)
-      |]
     makeModelTypeClass :: EnvM [Dec]
     makeModelTypeClass = lift $ do
       Just monadIO <- lookupTypeName "MonadIO"
@@ -348,11 +341,11 @@ makeLensesForTable t r = do
 makeOpaleyeTable :: String -> String -> EnvM [Dec]
 makeOpaleyeTable t r = do
   (connectInfo, _, _) <- get
-  functions <- makeFunctions
+  fieldInfos <- lift $ runIO $ do
+    conn <- connect connectInfo
+    getColumns conn t
+  functions <- makeModelInstance fieldInfos
   lift $ do
-    fieldInfos <- runIO $ do
-      conn <- connect connectInfo
-      getColumns conn t
     Just adapterFunc <- lookupValueName $ makeAdapterName r
     Just constructor <- lookupValueName r
     Just tableTypeName <- lookupTypeName "Table"
@@ -379,29 +372,45 @@ makeOpaleyeTable t r = do
         mkExp rq op ci = let 
                            ty = if (columnDefault ci) then op else rq 
                          in AppE (VarE ty) (LitE $ StringL $ columnName ci)
-    makeFunctions :: EnvM [Dec]
-    makeFunctions = makeModelInstance
-    makeModelInstance :: EnvM [Dec]
-    makeModelInstance = do
-      Just pField <- getPrimaryKeyField t r
+    makeModelInstance :: [ColumnInfo] -> EnvM [Dec]
+    makeModelInstance fieldInfos = do
+      let (Just pField) = getPrimaryKeyField t r
+      convertToPgWrite <- lift $ makeConversionFunction
       lift $ do 
-        insertExp <- [e|liftIO $ Prelude.head <$> runInsertManyReturning conn $(return $ VarE $ mkName $ makeTablename t) [(constant model)] id |]
-        updateExp <- [e|liftIO $ Prelude.head <$> runUpdateReturning conn $(return $ VarE $ mkName $ makeTablename t) (\_ -> constant model) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) model)) id |]
+        insertExp <- [e|liftIO $ Prelude.head <$> runInsertManyReturning conn $(return $ VarE $ mkName $ makeTablename t) [(toWrite $ constant model)] id |]
+        updateExp <- [e|liftIO $ Prelude.head <$> runUpdateReturning conn $(return $ VarE $ mkName $ makeTablename t) (\_ -> toWrite $ constant model) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) model)) id |]
         deleteExp <- [e|liftIO $ runDelete conn $(return $ VarE $ mkName $ makeTablename t) (\r -> ($(return $ VarE $ mkName pField) r) .== (constant $  $(return $ VarE $ mkName pField) model)) |]
         let pat = [VarP $ mkName "conn", VarP $ mkName "model"]
-        let insertFunc = FunD (mkName "insertModel") [Clause pat (NormalB insertExp) []]
-        let updateFunc = FunD (mkName "updateModel") [Clause pat (NormalB updateExp) []]
+        let insertFunc = FunD (mkName "insertModel") [Clause pat (NormalB insertExp) convertToPgWrite]
+        let updateFunc = FunD (mkName "updateModel") [Clause pat (NormalB updateExp) convertToPgWrite]
         let deleteFunc = FunD (mkName "deleteModel") [Clause pat (NormalB deleteExp) []]
         return [InstanceD Nothing [] (AppT (ConT $ mkName "DbModel") (ConT $ mkName r)) [insertFunc, updateFunc, deleteFunc]]
-    getPrimaryKeyField :: String -> String -> EnvM (Maybe String)
-    getPrimaryKeyField tname modelName = do
-      (connectInfo, _, _) <- get
-      fieldInfos <- (lift.runIO) $ do
-        conn <- connect connectInfo
-        getColumns conn tname
-      return $ case (filter (\ci -> columnPrimary ci)) fieldInfos of
-        [primaryField] -> Just $ makeFieldName modelName (columnName primaryField)
-        _ -> Nothing
+      where
+        makeConversionFunction :: Q [Dec]
+        makeConversionFunction = do
+          let
+            pgReadType = ConT $ (mkName $ makePGReadTypeName r)
+            pgWriteType = ConT $ (mkName $ makePGWriteTypeName r)
+            conversionFunctionSig = SigD (mkName "toWrite") $ AppT (AppT ArrowT pgReadType) pgWriteType
+            conversionFunction = FunD (mkName "toWrite") [Clause [makePattern] (NormalB conExp) []]
+          return $ [conversionFunctionSig, conversionFunction]
+          where
+            conExp :: Exp
+            conExp = foldl AppE (ConE $ mkName $ r) $ getFieldExps
+            getFieldExps :: [Exp]
+            getFieldExps = zipWith getFieldExp fieldInfos [1..]
+              where
+              getFieldExp :: ColumnInfo -> Int -> Exp
+              getFieldExp ci ix = if (columnDefault ci) then (AppE (ConE $ mkName "Just") mkVarExp) else mkVarExp
+                where
+                  mkVarExp :: Exp
+                  mkVarExp = VarE $ mkName $ "a" ++ (show ix)
+            makePattern :: Pat
+            makePattern = ConP (mkName $ r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) [1..]
+        getPrimaryKeyField :: String -> String -> (Maybe String)
+        getPrimaryKeyField tname modelName = case (filter (\ci -> columnPrimary ci)) fieldInfos of
+            [primaryField] -> Just $ makeFieldName modelName (columnName primaryField)
+            _ -> Nothing
   
 makeTablename :: String -> String
 makeTablename t = t ++ "Table"
