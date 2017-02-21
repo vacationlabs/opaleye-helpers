@@ -122,6 +122,7 @@ getPGColumnType ct = lift $ (getType ct)
         "uuid"        -> ConT <$> fromJust <$> lookupTypeName "PGUuid"
         "json"        -> ConT <$> fromJust <$> lookupTypeName "PGJson"
         "jsonb"       -> ConT <$> fromJust <$> lookupTypeName "PGJsonb"
+        "hstore"      -> ConT <$> fromJust <$> lookupTypeName "PGJsonb"
         "varchar"     -> ConT <$> fromJust <$> lookupTypeName "PGText"
         "oid"         -> ConT <$> fromJust <$> lookupTypeName "PGInt8"
         "inet"        -> ConT <$> fromJust <$> lookupTypeName "PGText"
@@ -161,28 +162,40 @@ makeReadTypes fieldInfos = mapM makePgType fieldInfos
 makeHaskellTypes :: [ColumnInfo] -> EnvM [Type]
 makeHaskellTypes fieldInfos = mapM makeHaskellType fieldInfos
 
+fromJust' :: Maybe a -> a
+fromJust' Nothing = error $ ""
+fromJust' (Just a) = a
+
+safeLookupTypeName :: String -> Q Name
+safeLookupTypeName name = do
+  n <- lookupTypeName name
+  case n of
+    Nothing -> error $ "Cannot find name '" ++ name ++ "'"
+    Just x -> return x
+
 getHaskellTypeFor :: ColumnType -> EnvM Type
 getHaskellTypeFor ct = case ct of
-  "bool"        -> lift $ (ConT).fromJust <$> lookupTypeName "Bool"
-  "int2"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int16"
-  "int4"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int"
-  "int8"        -> lift $ (ConT).fromJust <$> lookupTypeName "Int64"
-  "float4"      -> lift $ (ConT).fromJust <$> lookupTypeName "Float"
-  "float8"      -> lift $ (ConT).fromJust <$> lookupTypeName "Double"
-  "numeric"     -> lift $ (ConT).fromJust <$> lookupTypeName "Scientific"
-  "char"        -> lift $ (ConT).fromJust <$> lookupTypeName "Char"
-  "text"        -> lift $ (ConT).fromJust <$> lookupTypeName "Text"
-  "bytea"       -> lift $ (ConT).fromJust <$> lookupTypeName "ByteString"
-  "date"        -> lift $ (ConT).fromJust <$> lookupTypeName "Day"
-  "timestamp"   -> lift $ (ConT).fromJust <$> lookupTypeName "LocalTime"
-  "timestamptz" -> lift $ (ConT).fromJust <$> lookupTypeName "UTCTime"
-  "time"        -> lift $ (ConT).fromJust <$> lookupTypeName "TimeOfDay"
-  "timetz"      -> lift $ (ConT).fromJust <$> lookupTypeName "TimeOfDay"
-  "interval"    -> lift $ (ConT).fromJust <$> lookupTypeName "DiffTime"
-  "uuid"        -> lift $ (ConT).fromJust <$> lookupTypeName "UUID"
-  "json"        -> lift $ (ConT).fromJust <$> lookupTypeName "Value"
-  "jsonb"       -> lift $ (ConT).fromJust <$> lookupTypeName "Value"
-  "varchar"     -> lift $ (ConT).fromJust <$> lookupTypeName "Text"
+  "bool"        -> lift $ (ConT) <$> safeLookupTypeName "Bool"
+  "int2"        -> lift $ (ConT) <$> safeLookupTypeName "Int16"
+  "int4"        -> lift $ (ConT) <$> safeLookupTypeName "Int"
+  "int8"        -> lift $ (ConT) <$> safeLookupTypeName "Int64"
+  "float4"      -> lift $ (ConT) <$> safeLookupTypeName "Float"
+  "float8"      -> lift $ (ConT) <$> safeLookupTypeName "Double"
+  "numeric"     -> lift $ (ConT) <$> safeLookupTypeName "Scientific"
+  "char"        -> lift $ (ConT) <$> safeLookupTypeName "Char"
+  "text"        -> lift $ (ConT) <$> safeLookupTypeName "Text"
+  "bytea"       -> lift $ (ConT) <$> safeLookupTypeName "ByteString"
+  "date"        -> lift $ (ConT) <$> safeLookupTypeName "Day"
+  "timestamp"   -> lift $ (ConT) <$> safeLookupTypeName "LocalTime"
+  "timestamptz" -> lift $ (ConT) <$> safeLookupTypeName "UTCTime"
+  "time"        -> lift $ (ConT) <$> safeLookupTypeName "TimeOfDay"
+  "timetz"      -> lift $ (ConT) <$> safeLookupTypeName "TimeOfDay"
+  "interval"    -> lift $ (ConT) <$> safeLookupTypeName "DiffTime"
+  "uuid"        -> lift $ (ConT) <$> safeLookupTypeName "UUID"
+  "json"        -> lift $ (ConT) <$> safeLookupTypeName "Value"
+  "jsonb"       -> lift $ (ConT) <$> safeLookupTypeName "Value"
+  "hstore"      -> lift $ (ConT) <$> safeLookupTypeName "Value"
+  "varchar"     -> lift $ (ConT) <$> safeLookupTypeName "Text"
   "_varchar"    -> (AppT array) <$> getHaskellTypeFor "varchar"
   "_text"       -> (AppT array) <$> getHaskellTypeFor "varchar"
   "_int4"       -> (AppT array) <$> getHaskellTypeFor "int4"
