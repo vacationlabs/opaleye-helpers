@@ -444,7 +444,12 @@ makeNewTypes = do
         return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show]
 
 makeFieldName :: String -> String -> String
-makeFieldName tablename (s:ss) = "_" ++ (toLower <$> tablename) ++ (toUpper s:ss)
+makeFieldName modelName (s:ss) = "_" ++ (toLower <$> modelName) ++ (toUpper s:replaceUnderscore ss)
+
+replaceUnderscore ('_':x:xs) = (toUpper x):(replaceUnderscore xs)
+replaceUnderscore ('_':xs) = (replaceUnderscore xs)
+replaceUnderscore (x:xs) = x:(replaceUnderscore xs)
+replaceUnderscore [] = ""
 
 ucFirst :: String -> String
 ucFirst (s:ss) = (toUpper s):ss
