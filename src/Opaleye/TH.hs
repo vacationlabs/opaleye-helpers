@@ -30,6 +30,7 @@ import GHC.Int
 
 import Control.Monad.Trans.Class
 import Control.Monad.Trans.Reader
+import Control.Monad.State.Lazy
 
 import Control.Lens
 
@@ -41,11 +42,12 @@ type ColumnType = String
 
 data ColumnInfo = ColumnInfo { columnTableName :: String, columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool, columnPrimary :: Bool} deriving (Show)
 
-testFunc2 :: ReaderT () Q (Maybe Name)
+testFunc2 :: StateT () Q (Maybe Name)
 testFunc2 = lift $ lookupTypeName "wewq" 
 
-type Env = (ConnectInfo, Options)
-type EnvM a = ReaderT Env Q a
+type LensClassGenerated = [String]
+type Env = (ConnectInfo, Options, LensClassGenerated)
+type EnvM a = StateT Env Q a
 
 getColumns :: Connection -> String -> IO [ColumnInfo]
 getColumns conn tname = do
@@ -71,7 +73,7 @@ getColumns conn tname = do
 
 lookupNewtypeForField :: ColumnInfo -> EnvM (Maybe Name)
 lookupNewtypeForField ci = do
-  (_, options) <- ask
+  (_, options, _) <- get
   return $ mkName <$> lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options)
 
 makePgType :: ColumnInfo -> EnvM Type
@@ -214,14 +216,17 @@ makeWriteTypes fieldInfos = do
           else defaultType
 
 makeOpaleyeTables :: Env -> Q [Dec]
-makeOpaleyeTables env = runReaderT (do
-  (_, options) <- ask
-  let names = fst <$> tableOptions options
-  let models = (modelName.snd) <$> tableOptions options
-  typeClassDecs <- makeModelTypeClass
-  tables <- concat <$> zipWithM makeOpaleyeTable names models
-  lenses <- concat <$> zipWithM makeLensesForTable names models
-  return $ typeClassDecs ++ tables ++ lenses) env
+makeOpaleyeTables env = do
+  (decs, (_, _, clg)) <- runStateT (do
+    (_, options, _) <- get
+    let names = fst <$> tableOptions options
+    let models = (modelName.snd) <$> tableOptions options
+    typeClassDecs <- makeModelTypeClass
+    tables <- concat <$> zipWithM makeOpaleyeTable names models
+    lenses <- concat <$> zipWithM makeLensesForTable names models
+    return $ typeClassDecs ++ tables ++ lenses) env
+  runIO $ putStrLn $ show clg
+  return decs
   where
     makeModelTypeClass :: EnvM [Dec]
     makeModelTypeClass = lift $ do
@@ -239,7 +244,7 @@ makeOpaleyeTables env = runReaderT (do
 
 makeLensesForTable :: String -> String -> EnvM [Dec]
 makeLensesForTable t r = do
-  (connectInfo, options) <- ask
+  (connectInfo, options, clg) <- get
   case lookup t (tableOptions options) of
     Just tOptions -> do
       let
@@ -252,29 +257,45 @@ makeLensesForTable t r = do
   where
     makeLenses' :: String -> [String] -> Bool -> EnvM [Dec]
     makeLenses' modelname protected makeProtected = do
-      lift $ do 
+      (_, _, clg) <- get
+      decs <- lift $ do 
         let modelTypeName = mkName $ modelname ++ "Poly"
         case makeProtected of
-          True -> makeProtectedLenses modelTypeName 
-          False -> makeNormalLenses modelTypeName
+          True -> makeProtectedLenses modelTypeName clg 
+          False -> makeNormalLenses modelTypeName clg
+      return decs
       where
-        makeProtectedLenses :: Name -> Q [Dec]
-        makeProtectedLenses modelTypeName = let
-          lr1 = abbreviatedFields & lensField .~ protectedFieldNamer
-          lr = (lr1 & generateUpdateableOptics .~ False)
+        makeProtectedLenses :: Name -> LensClassGenerated -> Q [Dec]
+        makeProtectedLenses modelTypeName clg = let
+          -- The following code extracts list of generated
+          -- classes from the state and only generate classes
+          -- if they are not on that list.
+          lr1 = abbreviatedFields & lensField .~ (protectedFieldNamer clg True)
+          lr2 = abbreviatedFields & lensField .~ (protectedFieldNamer clg False)
+          lr3 = (lr1 & generateUpdateableOptics .~ False & createClass .~ False )
+          lr4 = (lr2 & generateUpdateableOptics .~ False)
+          in do
+            decs1 <- makeLensesWith lr3 modelTypeName
+            decs2 <- makeLensesWith lr4 modelTypeName
+            return $ decs1 ++ decs2
+        makeNormalLenses :: Name -> LensClassGenerated -> Q [Dec]
+        makeNormalLenses modelTypeName clg = let
+          lr = abbreviatedFields & lensField .~ (normalFieldNamer clg True)
           in makeLensesWith lr modelTypeName
-        makeNormalLenses :: Name -> Q [Dec]
-        makeNormalLenses modelTypeName = let
-          lr = abbreviatedFields & lensField .~ normalFieldNamer
-          in makeLensesWith lr modelTypeName
-        protectedFieldNamer :: Name -> [Name] -> Name -> [DefName]
-        protectedFieldNamer x y fname = if elem (nameBase fname) protected
-          then abbreviatedNamer x y fname
-          else []
-        normalFieldNamer :: Name -> [Name] -> Name -> [DefName]
-        normalFieldNamer x y fname = if (Prelude.not $ elem (nameBase fname) protected)
-          then abbreviatedNamer x y fname
-          else []
+        protectedFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
+        protectedFieldNamer clgn eec x y fname = let
+          sFname = nameBase fname
+          prted = elem sFname protected
+          in if eec
+             then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
+             else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
+        normalFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
+        normalFieldNamer clgn eec x y fname = let
+          sFname = nameBase fname
+          prted = (Prelude.not $ elem (nameBase fname) protected)
+          in if eec
+             then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
+             else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
         makeLenseName :: String -> String
         makeLenseName (x:xs) = lcFirst $ drop (length r) xs
           where
@@ -283,7 +304,7 @@ makeLensesForTable t r = do
 
 makeOpaleyeTable :: String -> String -> EnvM [Dec]
 makeOpaleyeTable t r = do
-  (connectInfo, _) <- ask
+  (connectInfo, _, _) <- get
   functions <- makeFunctions
   lift $ do
     fieldInfos <- runIO $ do
@@ -335,7 +356,7 @@ makeOpaleyeTable t r = do
         return [InstanceD Nothing [] (AppT (ConT $ mkName "DbModel") (ConT $ mkName r)) [insertFunc, updateFunc, deleteFunc]]
     getPrimaryKeyField :: String -> String -> EnvM (Maybe String)
     getPrimaryKeyField tname modelName = do
-      (connectInfo, _) <- ask
+      (connectInfo, _, _) <- get
       fieldInfos <- (lift.runIO) $ do
         conn <- connect connectInfo
         getColumns conn tname
@@ -356,9 +377,9 @@ makeAdapterName :: String -> String
 makeAdapterName tn = 'p':tn
 
 makeOpaleyeModels :: Env -> Q [Dec]
-makeOpaleyeModels env = runReaderT (do
+makeOpaleyeModels env = fst <$> runStateT (do
   newTypeDecs <- makeNewTypes
-  (_, options) <- ask
+  (_, options, _) <- get
   let names = fst <$> tableOptions options
   let models = (modelName.snd) <$> tableOptions options
   instances <- makeNewtypeInstances
@@ -367,12 +388,12 @@ makeOpaleyeModels env = runReaderT (do
 
 collectNewTypes :: EnvM [(ColumnInfo, String)]
 collectNewTypes = do
-  (connInfo, options) <- ask
+  (connInfo, options, _) <- get
   concat <$> mapM getNewTypes (tableOptions options)
   where
     getNewTypes :: (String, TableOptions) -> EnvM [(ColumnInfo, String)]
     getNewTypes (tbName, tbOptions) = do
-      (connectInfo, _) <- ask
+      (connectInfo, _, _) <- get
       fieldInfos <- (lift.runIO) $ do
         conn <- connect connectInfo
         getColumns conn tbName
@@ -406,7 +427,7 @@ ucFirst (s:ss) = (toUpper s):ss
     
 makeOpaleyeModel :: String -> String -> EnvM [Dec]
 makeOpaleyeModel t r = do
-  (connectInfo, _) <- ask
+  (connectInfo, _, _) <- get
   let recordName = mkName r
   let recordPolyName = mkName $ r ++ "Poly"
   fieldInfos <- (lift.runIO) $ do
@@ -574,8 +595,8 @@ getTableOptions :: String -> Options -> TableOptions
 getTableOptions tname options = fromJust $ lookup tname (tableOptions options)
 
 makeAdaptorAndInstances :: Env -> Q [Dec]
-makeAdaptorAndInstances env = runReaderT (do
-  (_, options) <- ask
+makeAdaptorAndInstances env = fst <$> runStateT (do
+  (_, options, _) <- get
   let models = (modelName.snd) <$> tableOptions options
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (x ++ "Poly")) models
