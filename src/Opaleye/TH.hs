@@ -235,12 +235,18 @@ makeOpaleyeTables env = do
     let names = fst <$> tableOptions options
     let models = (modelName.snd) <$> tableOptions options
     typeClassDecs <- makeModelTypeClass
+    genInstances <- makeGeneralInstances
     tables <- concat <$> zipWithM makeOpaleyeTable names models
     lenses <- concat <$> zipWithM makeLensesForTable names models
-    return $ typeClassDecs ++ tables ++ lenses) env
+    return $ genInstances ++ typeClassDecs ++ tables ++ lenses) env
   runIO $ putStrLn $ show clg
   return decs
   where
+    makeGeneralInstances :: EnvM [Dec]
+    makeGeneralInstances = lift $ [d|
+      instance (Default Constant a (Column b)) => Default Constant a (Maybe (Column b)) where
+        def = Constant (\x -> Just $ constant x)
+      |]
     makeModelTypeClass :: EnvM [Dec]
     makeModelTypeClass = lift $ do
       Just monadIO <- lookupTypeName "MonadIO"
@@ -374,11 +380,7 @@ makeOpaleyeTable t r = do
                            ty = if (columnDefault ci) then op else rq 
                          in AppE (VarE ty) (LitE $ StringL $ columnName ci)
     makeFunctions :: EnvM [Dec]
-    makeFunctions = do
-      instances <- makeModelInstance
-      --updation <- makeUpdateFunction
-      --deletion <- makeDeleteFunction
-      return instances
+    makeFunctions = makeModelInstance
     makeModelInstance :: EnvM [Dec]
     makeModelInstance = do
       Just pField <- getPrimaryKeyField t r
@@ -566,17 +568,6 @@ makeNewtypeInstances = do
             else 
               if (columnDefault ci) 
                 then lift $ do
-                  -- For primary keys, the following instance saves from having to make the key
-                  -- a Just value to insert into it.
-                  instance_prim <- if (columnPrimary ci) 
-                    then
-                      [d|
-                        instance Default Constant $(ntNameQ) (Maybe (Column $(ntNameQ))) where
-                          def = Constant f
-                            where
-                            f ($(return $ ConP ntName $ [VarP $ mkName "x"])) = Just $ unsafeCoerceColumn $ $(return pgConFuncExp) x
-                        |]
-                    else return []
                   ins <- [d|
                     instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
                       def = Constant f
@@ -588,7 +579,7 @@ makeNewtypeInstances = do
                         f :: Column $(return pgDefColType) -> Column $(ntNameQ)
                         f  = unsafeCoerceColumn
                     |] 
-                  return $ ins ++ instance_prim
+                  return $ ins
                 else
                   lift [d|
                     instance Default Constant $(ntNameQ) (Column $(return pgDefColType)) where
