@@ -242,12 +242,12 @@ makeLensesForTable t r = do
   (connectInfo, options) <- ask
   case lookup t (tableOptions options) of
     Just tOptions -> do
-      case protectedFields tOptions of
-        [] -> return []
-        xs -> let pFieldNames = (makeFieldName r) <$> xs in do
-          d1 <- makeLenses' r pFieldNames True
-          d2 <- makeLenses' r pFieldNames False
-          return $ d1 ++ d2
+      let
+        xs = protectedFields tOptions
+        pFieldNames = (makeFieldName r) <$> xs 
+      d1 <- makeLenses' r pFieldNames True
+      d2 <- makeLenses' r pFieldNames False
+      return $ d1 ++ d2
     Nothing -> return []
   where
     makeLenses' :: String -> [String] -> Bool -> EnvM [Dec]
@@ -260,20 +260,20 @@ makeLensesForTable t r = do
       where
         makeProtectedLenses :: Name -> Q [Dec]
         makeProtectedLenses modelTypeName = let
-          lr1 = lensRules & lensField .~ protectedFieldNamer
+          lr1 = abbreviatedFields & lensField .~ protectedFieldNamer
           lr = (lr1 & generateUpdateableOptics .~ False)
           in makeLensesWith lr modelTypeName
         makeNormalLenses :: Name -> Q [Dec]
         makeNormalLenses modelTypeName = let
-          lr = lensRules & lensField .~ normalFieldNamer
+          lr = abbreviatedFields & lensField .~ normalFieldNamer
           in makeLensesWith lr modelTypeName
         protectedFieldNamer :: Name -> [Name] -> Name -> [DefName]
-        protectedFieldNamer _ _ fname = if elem (nameBase fname) protected
-          then [TopName $ (mkName.makeLenseName) (nameBase fname)]
+        protectedFieldNamer x y fname = if elem (nameBase fname) protected
+          then abbreviatedNamer x y fname
           else []
         normalFieldNamer :: Name -> [Name] -> Name -> [DefName]
-        normalFieldNamer _ _ fname = if (Prelude.not $ elem (nameBase fname) protected)
-          then [TopName $ (mkName.makeLenseName) (nameBase fname)]
+        normalFieldNamer x y fname = if (Prelude.not $ elem (nameBase fname) protected)
+          then abbreviatedNamer x y fname
           else []
         makeLenseName :: String -> String
         makeLenseName (x:xs) = lcFirst $ drop (length r) xs
