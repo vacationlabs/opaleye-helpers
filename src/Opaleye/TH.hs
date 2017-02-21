@@ -257,6 +257,8 @@ makeLensesForTable t r = do
       return $ decs
     Nothing -> return []
   where
+    -- Store the type class definitions contained
+    -- in a list of declarations, in the state
     updateState :: [Dec] -> EnvM ()
     updateState decs = do
       (a, b, clg) <- get
