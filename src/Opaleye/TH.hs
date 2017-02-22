@@ -225,8 +225,11 @@ makeWriteTypes fieldInfos = do
           then (AppT (ConT maybeName) defaultType)
           else defaultType
 
-makeOpaleyeTables :: Env -> Q [Dec]
-makeOpaleyeTables env = do
+makeOpaleyeTables :: (ConnectInfo, Options) -> Q [Dec]
+makeOpaleyeTables (ci, op) = makeOpaleyeTables' (ci, op, [])
+
+makeOpaleyeTables' :: Env -> Q [Dec]
+makeOpaleyeTables' env = do
   (decs, (_, _, clg)) <- runStateT (do
     (_, options, _) <- get
     let names = fst <$> tableOptions options
@@ -421,8 +424,11 @@ makePGWriteTypeName tn = tn ++ "PGWrite"
 makeAdapterName :: String -> String
 makeAdapterName tn = 'p':tn
 
-makeOpaleyeModels :: Env -> Q [Dec]
-makeOpaleyeModels env = fst <$> runStateT (do
+makeOpaleyeModels :: (ConnectInfo, Options) -> Q [Dec]
+makeOpaleyeModels (ci, op) = makeOpaleyeModels' (ci, op, [])
+
+makeOpaleyeModels' :: Env -> Q [Dec]
+makeOpaleyeModels' env = fst <$> runStateT (do
   newTypeDecs <- makeNewTypes
   (_, options, _) <- get
   let names = fst <$> tableOptions options
@@ -633,8 +639,11 @@ makeNewtypeInstances = do
 getTableOptions :: String -> Options -> TableOptions
 getTableOptions tname options = fromJust $ lookup tname (tableOptions options)
 
-makeAdaptorAndInstances :: Env -> Q [Dec]
-makeAdaptorAndInstances env = fst <$> runStateT (do
+makeAdaptorAndInstances :: (ConnectInfo, Options) -> Q [Dec]
+makeAdaptorAndInstances (ci, op) = makeAdaptorAndInstances' (ci, op, [])
+
+makeAdaptorAndInstances' :: Env -> Q [Dec]
+makeAdaptorAndInstances' env = fst <$> runStateT (do
   (_, options, _) <- get
   let models = (modelName.snd) <$> tableOptions options
   let an = makeAdapterName <$> models
