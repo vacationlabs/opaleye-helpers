@@ -36,14 +36,11 @@ import Control.Lens
 
 data Options = Options { tableOptions :: [(String, TableOptions)] }
 
-data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, String)], skipInstancesFor :: [String], protectedFields :: [String] }
+data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, String)], protectedFields :: [String] }
 
 type ColumnType = String
 
 data ColumnInfo = ColumnInfo { columnTableName :: String, columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool, columnPrimary :: Bool} deriving (Show)
-
-testFunc2 :: StateT () Q (Maybe Name)
-testFunc2 = lift $ lookupTypeName "wewq" 
 
 type LensClassGenerated = [String]
 type Env = (ConnectInfo, Options, LensClassGenerated)
