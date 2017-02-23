@@ -42,11 +42,22 @@ type ColumnType = String
 
 data ColumnInfo = ColumnInfo { columnTableName :: String, columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool, columnPrimary :: Bool} deriving (Show)
 
+type TableInfo = (String, [ColumnInfo])
+type DbInfo = [TableInfo]
+
 type LensClassGenerated = [String]
-type Env = (ConnectInfo, Options, LensClassGenerated)
+type Env = (DbInfo, Options, LensClassGenerated)
 type EnvM a = StateT Env Q a
 
-getColumns :: Connection -> String -> IO [ColumnInfo]
+getFieldInfosForTable :: DbInfo -> String -> [ColumnInfo]
+getFieldInfosForTable dbInfo tname = fromJust $ lookup tname dbInfo
+
+getDbinfo :: ConnectInfo -> Options -> Q DbInfo
+getDbinfo connInfo options = runIO $ do
+  conn <- connect connInfo
+  Prelude.mapM (getColumns conn) (fst <$> tableOptions options)
+
+getColumns :: Connection -> String -> IO TableInfo
 getColumns conn tname = do
   field_rows <- query conn "SELECT \
       \ c.column_name, c.udt_name, c.column_default, c.is_nullable, (array_agg(tc.constraint_type::text) @> ARRAY ['PRIMARY KEY']) as is_primary\
@@ -63,7 +74,7 @@ getColumns conn tname = do
       \   tc.table_name = c.table_name and\
       \   tc.constraint_name = ccu.constraint_name\
       \ where c.table_name = ? group by c.column_name,c.udt_name, c.column_default, c.is_nullable" (Only tname) :: IO [(String, String, Maybe String, String, Bool)]
-  return $ makeColumnInfo <$> field_rows
+  return $ (fmap makeColumnInfo) <$> (tname, field_rows)
   where
     makeColumnInfo :: (String, String, Maybe String, String, Bool) -> ColumnInfo
     makeColumnInfo (name, ctype, hasDefault, isNullable, isPrimary) = ColumnInfo tname name ctype (isJust hasDefault) (isNullable == "YES") isPrimary
@@ -226,7 +237,9 @@ makeWriteTypes fieldInfos = do
           else defaultType
 
 makeOpaleyeTables :: (ConnectInfo, Options) -> Q [Dec]
-makeOpaleyeTables (ci, op) = makeOpaleyeTables' (ci, op, [])
+makeOpaleyeTables (ci, op) = do
+  dbInfo <- getDbinfo ci op
+  makeOpaleyeTables' (dbInfo, op, [])
 
 makeOpaleyeTables' :: Env -> Q [Dec]
 makeOpaleyeTables' env = do
@@ -340,10 +353,8 @@ makeLensesForTable t r = do
 
 makeOpaleyeTable :: String -> String -> EnvM [Dec]
 makeOpaleyeTable t r = do
-  (connectInfo, _, _) <- get
-  fieldInfos <- lift $ runIO $ do
-    conn <- connect connectInfo
-    getColumns conn t
+  (dbInfo, _, _) <- get
+  let fieldInfos = getFieldInfosForTable dbInfo t
   functions <- makeModelInstance fieldInfos
   lift $ do
     Just adapterFunc <- lookupValueName $ makeAdapterName r
@@ -425,7 +436,9 @@ makeAdapterName :: String -> String
 makeAdapterName tn = 'p':tn
 
 makeOpaleyeModels :: (ConnectInfo, Options) -> Q [Dec]
-makeOpaleyeModels (ci, op) = makeOpaleyeModels' (ci, op, [])
+makeOpaleyeModels (ci, op) = do
+  dbInfo <-  getDbinfo ci op
+  makeOpaleyeModels' (dbInfo, op, [])
 
 makeOpaleyeModels' :: Env -> Q [Dec]
 makeOpaleyeModels' env = fst <$> runStateT (do
@@ -444,10 +457,8 @@ collectNewTypes = do
   where
     getNewTypes :: (String, TableOptions) -> EnvM [(ColumnInfo, String)]
     getNewTypes (tbName, tbOptions) = do
-      (connectInfo, _, _) <- get
-      fieldInfos <- (lift.runIO) $ do
-        conn <- connect connectInfo
-        getColumns conn tbName
+      (dbInfo, _, _) <- get
+      let fieldInfos = getFieldInfosForTable dbInfo tbName
       return $ fromJust <$> (filter isJust $ (tryNewType tbOptions) <$> fieldInfos)
     tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, String)
     tryNewType to ci = (\n -> (ci, n)) <$> lookup (columnName ci) (overrideDefaultTypes to)
@@ -483,12 +494,10 @@ ucFirst (s:ss) = (toUpper s):ss
     
 makeOpaleyeModel :: String -> String -> EnvM [Dec]
 makeOpaleyeModel t r = do
-  (connectInfo, _, _) <- get
+  (dbInfo, _, _) <- get
   let recordName = mkName r
   let recordPolyName = mkName $ r ++ "Poly"
-  fieldInfos <- (lift.runIO) $ do
-    conn <- connect connectInfo
-    getColumns conn t
+  let fieldInfos = getFieldInfosForTable dbInfo t
   deriveShow <- lift $ [t| Show |]
   fields <- mapM (lift.newName.columnName) fieldInfos
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] [deriveShow]
@@ -640,7 +649,9 @@ getTableOptions :: String -> Options -> TableOptions
 getTableOptions tname options = fromJust $ lookup tname (tableOptions options)
 
 makeAdaptorAndInstances :: (ConnectInfo, Options) -> Q [Dec]
-makeAdaptorAndInstances (ci, op) = makeAdaptorAndInstances' (ci, op, [])
+makeAdaptorAndInstances (ci, op) = do
+  dbInfo <- getDbinfo ci op
+  makeAdaptorAndInstances' (dbInfo, op, [])
 
 makeAdaptorAndInstances' :: Env -> Q [Dec]
 makeAdaptorAndInstances' env = fst <$> runStateT (do
