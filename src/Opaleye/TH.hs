@@ -5,6 +5,9 @@ module Opaleye.TH (
       makeOpaleyeModels
     , makeOpaleyeTables
     , makeAdaptorAndInstances
+    , TableName(..)
+    , ColumnName(..)
+    , TypeName(..)
     , Options(..)
     , TableOptions(..)
     )
@@ -34,22 +37,38 @@ import Control.Monad.State.Lazy
 
 import Control.Lens
 
-data Options = Options { tableOptions :: [(String, TableOptions)] }
+newtype TableName = TableName String deriving (Eq)
+newtype ColumnName = ColumnName String deriving (Eq)
+newtype TypeName = TypeName String deriving (Eq)
 
-data TableOptions = TableOptions { modelName :: String, overrideDefaultTypes :: [(String, String)], protectedFields :: [String] }
+instance Show TableName where
+  show (TableName x) = x
+
+instance Show ColumnName where
+  show (ColumnName x) = x
+
+instance Show TypeName where
+  show (TypeName x) = x
+
+data Options = Options { tableOptions :: [(TableName, TableOptions)] }
+
+data TableOptions = TableOptions { modelName :: TypeName, overrideDefaultTypes :: [(ColumnName, TypeName)], protectedFields :: [ColumnName] }
 
 type ColumnType = String
 
-data ColumnInfo = ColumnInfo { columnTableName :: String, columnName ::String, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool, columnPrimary :: Bool} deriving (Show)
+data ColumnInfo = ColumnInfo { columnTableName :: TableName, columnName ::ColumnName, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool, columnPrimary :: Bool} deriving (Show)
 
-type TableInfo = (String, [ColumnInfo])
+type TableInfo = (TableName, [ColumnInfo])
 type DbInfo = [TableInfo]
 
 type LensClassGenerated = [String]
 type Env = (DbInfo, Options, LensClassGenerated)
 type EnvM a = StateT Env Q a
 
-getFieldInfosForTable :: DbInfo -> String -> [ColumnInfo]
+makePolyName :: TypeName -> TypeName
+makePolyName (TypeName modelName) = TypeName $ "Poly" ++ modelName
+
+getFieldInfosForTable :: DbInfo -> TableName -> [ColumnInfo]
 getFieldInfosForTable dbInfo tname = fromJust $ lookup tname dbInfo
 
 getDbinfo :: ConnectInfo -> Options -> Q DbInfo
@@ -57,8 +76,8 @@ getDbinfo connInfo options = runIO $ do
   conn <- connect connInfo
   Prelude.mapM (getColumns conn) (fst <$> tableOptions options)
 
-getColumns :: Connection -> String -> IO TableInfo
-getColumns conn tname = do
+getColumns :: Connection -> TableName -> IO TableInfo
+getColumns conn (TableName tname) = do
   field_rows <- query conn "SELECT \
       \ c.column_name, c.udt_name, c.column_default, c.is_nullable, (array_agg(tc.constraint_type::text) @> ARRAY ['PRIMARY KEY']) as is_primary\
       \ FROM\
@@ -74,15 +93,15 @@ getColumns conn tname = do
       \   tc.table_name = c.table_name and\
       \   tc.constraint_name = ccu.constraint_name\
       \ where c.table_name = ? group by c.column_name,c.udt_name, c.column_default, c.is_nullable" (Only tname) :: IO [(String, String, Maybe String, String, Bool)]
-  return $ (fmap makeColumnInfo) <$> (tname, field_rows)
+  return $ (fmap makeColumnInfo) <$> (TableName tname, field_rows)
   where
     makeColumnInfo :: (String, String, Maybe String, String, Bool) -> ColumnInfo
-    makeColumnInfo (name, ctype, hasDefault, isNullable, isPrimary) = ColumnInfo tname name ctype (isJust hasDefault) (isNullable == "YES") isPrimary
+    makeColumnInfo (name, ctype, hasDefault, isNullable, isPrimary) = ColumnInfo (TableName tname) (ColumnName name) ctype (isJust hasDefault) (isNullable == "YES") isPrimary
 
 lookupNewtypeForField :: ColumnInfo -> EnvM (Maybe Name)
 lookupNewtypeForField ci = do
   (_, options, _) <- get
-  return $ mkName <$> lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options)
+  return $ (mkName.show) <$> lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options)
 
 makePgType :: ColumnInfo -> EnvM Type
 makePgType ci@(ColumnInfo  _ dbColumnName ct hasDefault isNullable isPrimary) = do
@@ -174,8 +193,8 @@ fromJust' :: Maybe a -> a
 fromJust' Nothing = error $ ""
 fromJust' (Just a) = a
 
-safeLookupTypeName :: String -> Q Name
-safeLookupTypeName name = do
+safeLookupTypeName :: TypeName -> Q Name
+safeLookupTypeName (TypeName name) = do
   n <- lookupTypeName name
   case n of
     Nothing -> error $ "Cannot find name '" ++ name ++ "'"
@@ -183,32 +202,34 @@ safeLookupTypeName name = do
 
 getHaskellTypeFor :: ColumnType -> EnvM Type
 getHaskellTypeFor ct = case ct of
-  "bool"        -> lift $ (ConT) <$> safeLookupTypeName "Bool"
-  "int2"        -> lift $ (ConT) <$> safeLookupTypeName "Int16"
-  "int4"        -> lift $ (ConT) <$> safeLookupTypeName "Int"
-  "int8"        -> lift $ (ConT) <$> safeLookupTypeName "Int64"
-  "float4"      -> lift $ (ConT) <$> safeLookupTypeName "Float"
-  "float8"      -> lift $ (ConT) <$> safeLookupTypeName "Double"
-  "numeric"     -> lift $ (ConT) <$> safeLookupTypeName "Scientific"
-  "char"        -> lift $ (ConT) <$> safeLookupTypeName "Char"
-  "text"        -> lift $ (ConT) <$> safeLookupTypeName "Text"
-  "bytea"       -> lift $ (ConT) <$> safeLookupTypeName "ByteString"
-  "date"        -> lift $ (ConT) <$> safeLookupTypeName "Day"
-  "timestamp"   -> lift $ (ConT) <$> safeLookupTypeName "LocalTime"
-  "timestamptz" -> lift $ (ConT) <$> safeLookupTypeName "UTCTime"
-  "time"        -> lift $ (ConT) <$> safeLookupTypeName "TimeOfDay"
-  "timetz"      -> lift $ (ConT) <$> safeLookupTypeName "TimeOfDay"
-  "interval"    -> lift $ (ConT) <$> safeLookupTypeName "DiffTime"
-  "uuid"        -> lift $ (ConT) <$> safeLookupTypeName "UUID"
-  "json"        -> lift $ (ConT) <$> safeLookupTypeName "Value"
-  "jsonb"       -> lift $ (ConT) <$> safeLookupTypeName "Value"
-  "hstore"      -> lift $ (ConT) <$> safeLookupTypeName "Value"
-  "varchar"     -> lift $ (ConT) <$> safeLookupTypeName "Text"
+  "bool"        -> lift $ (ConT) <$> safeLookup' "Bool"
+  "int2"        -> lift $ (ConT) <$> safeLookup' "Int16"
+  "int4"        -> lift $ (ConT) <$> safeLookup' "Int"
+  "int8"        -> lift $ (ConT) <$> safeLookup' "Int64"
+  "float4"      -> lift $ (ConT) <$> safeLookup' "Float"
+  "float8"      -> lift $ (ConT) <$> safeLookup' "Double"
+  "numeric"     -> lift $ (ConT) <$> safeLookup' "Scientific"
+  "char"        -> lift $ (ConT) <$> safeLookup' "Char"
+  "text"        -> lift $ (ConT) <$> safeLookup' "Text"
+  "bytea"       -> lift $ (ConT) <$> safeLookup' "ByteString"
+  "date"        -> lift $ (ConT) <$> safeLookup' "Day"
+  "timestamp"   -> lift $ (ConT) <$> safeLookup' "LocalTime"
+  "timestamptz" -> lift $ (ConT) <$> safeLookup' "UTCTime"
+  "time"        -> lift $ (ConT) <$> safeLookup' "TimeOfDay"
+  "timetz"      -> lift $ (ConT) <$> safeLookup' "TimeOfDay"
+  "interval"    -> lift $ (ConT) <$> safeLookup' "DiffTime"
+  "uuid"        -> lift $ (ConT) <$> safeLookup' "UUID"
+  "json"        -> lift $ (ConT) <$> safeLookup' "Value"
+  "jsonb"       -> lift $ (ConT) <$> safeLookup' "Value"
+  "hstore"      -> lift $ (ConT) <$> safeLookup' "Value"
+  "varchar"     -> lift $ (ConT) <$> safeLookup' "Text"
   "_varchar"    -> (AppT array) <$> getHaskellTypeFor "varchar"
   "_text"       -> (AppT array) <$> getHaskellTypeFor "varchar"
   "_int4"       -> (AppT array) <$> getHaskellTypeFor "int4"
   other         -> error $ "Unimplemented PostgresQL type conversion for " ++ show other
   where
+    safeLookup' :: String -> Q Name
+    safeLookup' name = safeLookupTypeName (TypeName name)
     array :: Type
     array = ConT (''Vector)
 
@@ -267,7 +288,7 @@ makeOpaleyeTables' env = do
         deleteSig = SigD (mkName "deleteModel") deleteType
       return $ [ClassD [] (mkName "DbModel") [PlainTV $ mkName "model"] [] [insertSig, updateSig, deleteSig]]
 
-makeLensesForTable :: String -> String -> EnvM [Dec]
+makeLensesForTable :: TableName -> TypeName -> EnvM [Dec]
 makeLensesForTable t r = do
   (connectInfo, options, clg) <- get
   case lookup t (tableOptions options) of
@@ -295,11 +316,11 @@ makeLensesForTable t r = do
         extractClassName :: Dec -> Maybe String
         extractClassName (ClassD _ name _ _ _) = Just $ nameBase name
         extractClassName _ = Nothing
-    makeLenses' :: String -> [String] -> Bool -> EnvM [Dec]
+    makeLenses' :: TypeName -> [String] -> Bool -> EnvM [Dec]
     makeLenses' modelname protected makeProtected = do
       (_, _, clg) <- get
       decs <- lift $ do 
-        let modelTypeName = mkName $ modelname ++ "Poly"
+        let modelTypeName = mkName $ show $ makePolyName modelname
         case makeProtected of
           True -> makeProtectedLenses modelTypeName clg 
           False -> makeNormalLenses modelTypeName clg
@@ -321,7 +342,6 @@ makeLensesForTable t r = do
               return $ decs1 ++ decs2
         makeNormalLenses :: Name -> LensClassGenerated -> Q [Dec]
         makeNormalLenses modelTypeName clg = do
-          runIO $ putStrLn $ show clg
           let
             lr1 = abbreviatedFields & lensField .~ (normalFieldNamer clg True)
             lr2 = abbreviatedFields & lensField .~ (normalFieldNamer clg False)
@@ -332,43 +352,43 @@ makeLensesForTable t r = do
               return $ decs1 ++ decs2
         protectedFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
         protectedFieldNamer clgn eec x y fname = let
-          sFname = "Has" ++ (ucFirst $ drop ((length r) + 1) $ nameBase fname)
+          sFname = "Has" ++ (ucFirst $ drop ((length $ show $ r) + 1) $ nameBase fname)
           prted = elem sFname protected
           in if eec
              then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
              else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
         normalFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
         normalFieldNamer clgn eec x y fname = let
-          sFname = "Has" ++ (ucFirst $ drop ((length r) + 1) $ nameBase fname)
+          sFname = "Has" ++ (ucFirst $ drop ((length $ show r) + 1) $ nameBase fname)
           prted = (Prelude.not $ elem (nameBase fname) protected)
           in if eec
              then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
              else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
         makeLenseName :: String -> String
-        makeLenseName (x:xs) = lcFirst $ drop (length r) xs
+        makeLenseName (x:xs) = lcFirst $ drop (length $ show r) xs
         lcFirst :: String -> String
         lcFirst (x:xs) = (toLower x):xs
         ucFirst :: String -> String
         ucFirst (x:xs) = (toUpper x):xs
 
-makeOpaleyeTable :: String -> String -> EnvM [Dec]
+makeOpaleyeTable :: TableName -> TypeName -> EnvM [Dec]
 makeOpaleyeTable t r = do
   (dbInfo, _, _) <- get
   let fieldInfos = getFieldInfosForTable dbInfo t
   functions <- makeModelInstance fieldInfos
   lift $ do
     Just adapterFunc <- lookupValueName $ makeAdapterName r
-    Just constructor <- lookupValueName r
+    Just constructor <- lookupValueName $ show r
     Just tableTypeName <- lookupTypeName "Table"
     Just tableFunctionName <- lookupValueName "Table"
-    Just pgWriteTypeName <- lookupTypeName $ makePGWriteTypeName r
-    Just pgReadTypeName <- lookupTypeName $ makePGReadTypeName r
+    pgWriteTypeName <- safeLookupTypeName $ makePGWriteTypeName r
+    pgReadTypeName <- safeLookupTypeName $ makePGReadTypeName r
     let funcName = mkName $ makeTablename t 
     let funcType = AppT (AppT (ConT tableTypeName) (ConT pgWriteTypeName)) (ConT pgReadTypeName)
     let signature = SigD funcName funcType
     fieldExps <- (getTableTypes fieldInfos)
     let
-      funcExp = AppE (AppE (ConE tableFunctionName) (LitE $ StringL t)) funcExp2
+      funcExp = AppE (AppE (ConE tableFunctionName) (LitE $ StringL $ show t)) funcExp2
       funcExp2 = AppE (VarE adapterFunc) funcExp3
       funcExp3 = foldl AppE (ConE constructor) fieldExps
       in return $ [signature, FunD funcName [Clause [] (NormalB funcExp) []]] ++ functions
@@ -382,7 +402,7 @@ makeOpaleyeTable t r = do
         mkExp :: Name -> Name -> ColumnInfo -> Exp
         mkExp rq op ci = let 
                            ty = if (columnDefault ci) then op else rq 
-                         in AppE (VarE ty) (LitE $ StringL $ columnName ci)
+                         in AppE (VarE ty) (LitE $ StringL $ show $ columnName ci)
     makeModelInstance :: [ColumnInfo] -> EnvM [Dec]
     makeModelInstance fieldInfos = do
       let (Just pField) = getPrimaryKeyField t r
@@ -395,19 +415,19 @@ makeOpaleyeTable t r = do
         let insertFunc = FunD (mkName "insertModel") [Clause pat (NormalB insertExp) convertToPgWrite]
         let updateFunc = FunD (mkName "updateModel") [Clause pat (NormalB updateExp) convertToPgWrite]
         let deleteFunc = FunD (mkName "deleteModel") [Clause pat (NormalB deleteExp) []]
-        return [InstanceD Nothing [] (AppT (ConT $ mkName "DbModel") (ConT $ mkName r)) [insertFunc, updateFunc, deleteFunc]]
+        return [InstanceD Nothing [] (AppT (ConT $ mkName "DbModel") (ConT $ mkName $ show r)) [insertFunc, updateFunc, deleteFunc]]
       where
         makeConversionFunction :: Q [Dec]
         makeConversionFunction = do
           let
-            pgReadType = ConT $ (mkName $ makePGReadTypeName r)
-            pgWriteType = ConT $ (mkName $ makePGWriteTypeName r)
+            pgReadType = ConT $ (mkName $ show $ makePGReadTypeName r)
+            pgWriteType = ConT $ (mkName $ show $ makePGWriteTypeName r)
             conversionFunctionSig = SigD (mkName "toWrite") $ AppT (AppT ArrowT pgReadType) pgWriteType
             conversionFunction = FunD (mkName "toWrite") [Clause [makePattern] (NormalB conExp) []]
           return $ [conversionFunctionSig, conversionFunction]
           where
             conExp :: Exp
-            conExp = foldl AppE (ConE $ mkName $ r) $ getFieldExps
+            conExp = foldl AppE (ConE $ mkName $ show r) $ getFieldExps
             getFieldExps :: [Exp]
             getFieldExps = zipWith getFieldExp fieldInfos [1..]
               where
@@ -417,23 +437,23 @@ makeOpaleyeTable t r = do
                   mkVarExp :: Exp
                   mkVarExp = VarE $ mkName $ "a" ++ (show ix)
             makePattern :: Pat
-            makePattern = ConP (mkName $ r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) [1..]
-        getPrimaryKeyField :: String -> String -> (Maybe String)
-        getPrimaryKeyField tname modelName = case (filter (\ci -> columnPrimary ci)) fieldInfos of
+            makePattern = ConP (mkName $ show r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) [1..]
+        getPrimaryKeyField :: TableName -> TypeName -> (Maybe String)
+        getPrimaryKeyField (TableName tname) modelName = case (filter (\ci -> columnPrimary ci)) fieldInfos of
             [primaryField] -> Just $ makeFieldName modelName (columnName primaryField)
             _ -> Nothing
   
-makeTablename :: String -> String
-makeTablename t = t ++ "Table"
+makeTablename :: TableName -> String
+makeTablename (TableName t) = t ++ "Table"
 
-makePGReadTypeName :: String -> String
-makePGReadTypeName tn = tn ++ "PGRead"
+makePGReadTypeName :: TypeName -> TypeName
+makePGReadTypeName (TypeName tn) = TypeName $ tn ++ "PGRead"
 
-makePGWriteTypeName :: String -> String
-makePGWriteTypeName tn = tn ++ "PGWrite"
+makePGWriteTypeName :: TypeName -> TypeName
+makePGWriteTypeName (TypeName tn) = TypeName $ tn ++ "PGWrite"
 
-makeAdapterName :: String -> String
-makeAdapterName tn = 'p':tn
+makeAdapterName :: TypeName -> String
+makeAdapterName (TypeName mn) = 'p':mn
 
 makeOpaleyeModels :: (ConnectInfo, Options) -> Q [Dec]
 makeOpaleyeModels (ci, op) = do
@@ -450,17 +470,17 @@ makeOpaleyeModels' env = fst <$> runStateT (do
   decs <- concat <$> zipWithM makeOpaleyeModel names models
   return $ newTypeDecs ++ decs ++ instances) env
 
-collectNewTypes :: EnvM [(ColumnInfo, String)]
+collectNewTypes :: EnvM [(ColumnInfo, TypeName)]
 collectNewTypes = do
   (connInfo, options, _) <- get
   concat <$> mapM getNewTypes (tableOptions options)
   where
-    getNewTypes :: (String, TableOptions) -> EnvM [(ColumnInfo, String)]
+    getNewTypes :: (TableName, TableOptions) -> EnvM [(ColumnInfo, TypeName)]
     getNewTypes (tbName, tbOptions) = do
       (dbInfo, _, _) <- get
       let fieldInfos = getFieldInfosForTable dbInfo tbName
       return $ fromJust <$> (filter isJust $ (tryNewType tbOptions) <$> fieldInfos)
-    tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, String)
+    tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, TypeName)
     tryNewType to ci = (\n -> (ci, n)) <$> lookup (columnName ci) (overrideDefaultTypes to)
 
 makeNewTypes :: EnvM [Dec]
@@ -469,20 +489,20 @@ makeNewTypes = do
   (a, b) <- foldM makeNewType ([], []) nts
   return b
   where
-  makeNewType :: ([String], [Dec]) -> (ColumnInfo, String) -> EnvM ([String], [Dec])
+  makeNewType :: ([TypeName], [Dec]) -> (ColumnInfo, TypeName) -> EnvM ([TypeName], [Dec])
   makeNewType (added, decs) (ci, nt_name) = do
     if nt_name `elem` added then (return (added, decs)) else do
       dec <- makeNewType' nt_name
       return (nt_name:added, dec:decs)
     where
-      makeNewType' :: String -> EnvM Dec
-      makeNewType' name = do
+      makeNewType' :: TypeName -> EnvM Dec
+      makeNewType' (TypeName name) = do
         let bang = Bang NoSourceUnpackedness NoSourceStrictness
         haskellType <- makeRawHaskellType ci
         return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show]
 
-makeFieldName :: String -> String -> String
-makeFieldName modelName (s:ss) = "_" ++ (toLower <$> modelName) ++ (toUpper s:replaceUnderscore ss)
+makeFieldName :: TypeName -> ColumnName -> String
+makeFieldName (TypeName modelName) (ColumnName (s:ss)) = "_" ++ (toLower <$> modelName) ++ (toUpper s:replaceUnderscore ss)
 
 replaceUnderscore ('_':x:xs) = (toUpper x):(replaceUnderscore xs)
 replaceUnderscore ('_':xs) = (replaceUnderscore xs)
@@ -492,18 +512,18 @@ replaceUnderscore [] = ""
 ucFirst :: String -> String
 ucFirst (s:ss) = (toUpper s):ss
     
-makeOpaleyeModel :: String -> String -> EnvM [Dec]
+makeOpaleyeModel :: TableName -> TypeName -> EnvM [Dec]
 makeOpaleyeModel t r = do
   (dbInfo, _, _) <- get
-  let recordName = mkName r
-  let recordPolyName = mkName $ r ++ "Poly"
+  let recordName = mkName $ show r
+  let recordPolyName = mkName $ show $ makePolyName r
   let fieldInfos = getFieldInfosForTable dbInfo t
   deriveShow <- lift $ [t| Show |]
-  fields <- mapM (lift.newName.columnName) fieldInfos
+  fields <- mapM (lift.newName.show.columnName) fieldInfos
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] [deriveShow]
-  haskell <- makeHaskellAlias (mkName r) recordPolyName fieldInfos
-  pgRead <- makePgReadAlias (mkName $ makePGReadTypeName r) recordPolyName fieldInfos
-  pgWrite <- makePgWriteAlias (mkName $ makePGWriteTypeName r) recordPolyName fieldInfos
+  haskell <- makeHaskellAlias (mkName $ show r) recordPolyName fieldInfos
+  pgRead <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
+  pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
   return $ [rec, haskell, pgRead, pgWrite]
   where
     makeHaskellAlias :: Name -> Name -> [ColumnInfo] -> EnvM Dec
@@ -542,12 +562,12 @@ makeNewtypeInstances = do
   newTypes <- groupDups <$> collectNewTypes
   concat  <$> (mapM makeInstancesForNewtypeColumn newTypes)
   where
-    groupDups :: [(ColumnInfo, String)] -> [(ColumnInfo, Name)]
+    groupDups :: [(ColumnInfo, TypeName)] -> [(ColumnInfo, Name)]
     groupDups pairs = fmap collect $ nub $ fmap snd pairs
       where
-        collect :: String -> (ColumnInfo, Name)
-        collect tn = (fromJust $ lookup tn $ swapped, mkName tn)
-        swapped :: [(String, ColumnInfo)]
+        collect :: TypeName -> (ColumnInfo, Name)
+        collect tn = (fromJust $ lookup tn $ swapped, mkName $ show tn)
+        swapped :: [(TypeName, ColumnInfo)]
         swapped = fmap swap pairs
         swap :: (a, b) -> (b, a)
         swap (x, y) = (y, x)
@@ -645,7 +665,7 @@ makeNewtypeInstances = do
                     f  = unsafeCoerceColumn
                 |]
 
-getTableOptions :: String -> Options -> TableOptions
+getTableOptions :: TableName -> Options -> TableOptions
 getTableOptions tname options = fromJust $ lookup tname (tableOptions options)
 
 makeAdaptorAndInstances :: (ConnectInfo, Options) -> Q [Dec]
@@ -658,6 +678,6 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   (_, options, _) <- get
   let models = (modelName.snd) <$> tableOptions options
   let an = makeAdapterName <$> models
-  pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (x ++ "Poly")) models
+  pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (show $ makePolyName x)) models
   lift $ concat <$> zipWithM makeAdaptorAndInstance an pn) env
 
