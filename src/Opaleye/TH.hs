@@ -680,4 +680,3 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (show $ makePolyName x)) models
   lift $ concat <$> zipWithM makeAdaptorAndInstance an pn) env
-
