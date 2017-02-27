@@ -26,9 +26,9 @@ import Data.Profunctor.Product.TH (makeAdaptorAndInstance)
 import Data.Profunctor.Product.Default
 import Opaleye
 import Data.Text (Text)
-import Data.Vector (Vector)
 import Data.Typeable
 import Data.Aeson
+import Data.Scientific
 import GHC.Int
 
 import Control.Monad.Trans.Class
@@ -231,7 +231,7 @@ getHaskellTypeFor ct = case ct of
     safeLookup' :: String -> Q Name
     safeLookup' name = safeLookupTypeName (TypeName name)
     array :: Type
-    array = ConT (''Vector)
+    array = ConT (''[])
 
 makeRawHaskellType :: ColumnInfo -> EnvM Type
 makeRawHaskellType ci = do
@@ -679,4 +679,15 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   let models = (modelName.snd) <$> tableOptions options
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (show $ makePolyName x)) models
-  lift $ concat <$> zipWithM makeAdaptorAndInstance an pn) env
+  rationalIns <- lift $ [d|
+    instance QueryRunnerColumnDefault PGNumeric Scientific where
+      queryRunnerColumnDefault = fieldQueryRunnerColumn
+    instance Default Constant Scientific (Column PGNumeric) where
+      def = Constant f1
+        where
+        f1 :: Scientific -> (Column PGNumeric)
+        f1 x = unsafeCoerceColumn $ pgDouble $ toRealFloat x
+    |]
+  decs <- lift $ (concat <$> zipWithM makeAdaptorAndInstance an pn)
+  return $ decs ++ rationalIns
+  ) env

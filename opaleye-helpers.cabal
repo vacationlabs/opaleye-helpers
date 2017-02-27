@@ -28,7 +28,6 @@ library
                        , mtl
                        , lens
                        , transformers
-                       , vector
                        , template-haskell
   default-language:    Haskell2010
 

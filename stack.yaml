@@ -39,7 +39,9 @@ packages:
 - '.'
 # Dependency packages to be pulled from upstream that are not in the resolver
 # (e.g., acme-missiles-0.3)
-extra-deps: []
+extra-deps:
+- product-profunctors-0.8.0.3
+- opaleye-0.5.3.0
 
 # Override default flag values for local packages and extra-deps
 flags: {}
