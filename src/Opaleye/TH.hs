@@ -103,6 +103,19 @@ lookupNewtypeForField ci = do
   (_, options, _) <- get
   return $ (mkName.show) <$> lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options)
 
+makePgTypeWithNull :: ColumnInfo -> EnvM Type
+makePgTypeWithNull ci = do
+  t <- makePgType ci
+  return $ case t of
+    AppT (ConT col) a -> if (hasNullable a) then t else (addNullable t)
+    _ -> error "Does not know how to make a nullable type"
+  where
+    addNullable :: Type -> Type
+    addNullable (AppT a b) = let nullable = ConT (mkName "Nullable") in (AppT a (AppT nullable b))
+    hasNullable :: Type -> Bool
+    hasNullable (AppT (ConT a) _) = nameBase a == "Nullable" 
+    hasNullable _ = False
+
 makePgType :: ColumnInfo -> EnvM Type
 makePgType ci@(ColumnInfo  _ dbColumnName ct hasDefault isNullable isPrimary) = do
   c <- lift $ lookupTypeName "Column"
@@ -185,6 +198,9 @@ getPGConFuncExp (AppT pga pgt) = do
 
 makeReadTypes :: [ColumnInfo] -> EnvM [Type]
 makeReadTypes fieldInfos = mapM makePgType fieldInfos
+
+makeReadTypesWithNulls :: [ColumnInfo] -> EnvM [Type]
+makeReadTypesWithNulls fieldInfos = mapM makePgTypeWithNull fieldInfos
 
 makeHaskellTypes :: [ColumnInfo] -> EnvM [Type]
 makeHaskellTypes fieldInfos = mapM makeHaskellType fieldInfos
@@ -523,9 +539,9 @@ makeOpaleyeModel t r = do
   fields <- mapM (lift.newName.show.columnName) fieldInfos
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] [deriveShow, deriveEq]
   haskell <- makeHaskellAlias (mkName $ show r) recordPolyName fieldInfos
-  pgRead <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
+  (pgRead, pgReadWithNulls) <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
-  return $ [rec, haskell, pgRead, pgWrite]
+  return $ [rec, haskell, pgRead, pgReadWithNulls, pgWrite]
   where
     makeHaskellAlias :: Name -> Name -> [ColumnInfo] -> EnvM Dec
     makeHaskellAlias hname poly_name fieldInfos = do
@@ -534,10 +550,16 @@ makeOpaleyeModel t r = do
       where
         full_type :: [Type] -> Type
         full_type typs = foldl AppT (ConT poly_name) typs
-    makePgReadAlias :: Name -> Name -> [ColumnInfo] -> EnvM Dec
+    makePgReadAlias :: Name -> Name -> [ColumnInfo] -> EnvM (Dec, Dec)
     makePgReadAlias name modelType fieldInfos = do
       readType <- makePgReadType modelType fieldInfos
-      return $ TySynD name [] readType
+      readTypeWithNulls <- makePgReadTypeWithNulls modelType fieldInfos
+      let nameWithNulls = mkName $ (nameBase name) ++ "WithNulls"
+      return $ (TySynD name [] readType, TySynD nameWithNulls [] readTypeWithNulls)
+    makePgReadTypeWithNulls :: Name -> [ColumnInfo] -> EnvM Type
+    makePgReadTypeWithNulls modelType fieldInfos = do
+      readTypes <- makeReadTypesWithNulls fieldInfos
+      return $ foldl AppT (ConT modelType) readTypes
     makePgReadType :: Name -> [ColumnInfo] -> EnvM Type
     makePgReadType modelType fieldInfos = do
       readTypes <- makeReadTypes fieldInfos
