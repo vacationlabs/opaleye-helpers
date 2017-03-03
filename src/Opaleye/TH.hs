@@ -205,6 +205,9 @@ makeReadTypesWithNulls fieldInfos = mapM makePgTypeWithNull fieldInfos
 makeHaskellTypes :: [ColumnInfo] -> EnvM [Type]
 makeHaskellTypes fieldInfos = mapM makeHaskellType fieldInfos
 
+makeHaskellTypesWithMaybes :: [ColumnInfo] -> EnvM [Type]
+makeHaskellTypesWithMaybes fieldInfos = mapM makeHaskellTypeWithMaybe fieldInfos
+
 fromJust' :: Maybe a -> a
 fromJust' Nothing = error $ ""
 fromJust' (Just a) = a
@@ -252,6 +255,14 @@ getHaskellTypeFor ct = case ct of
 makeRawHaskellType :: ColumnInfo -> EnvM Type
 makeRawHaskellType ci = do
     getHaskellTypeFor (columnType ci)
+
+makeHaskellTypeWithMaybe :: ColumnInfo -> EnvM Type
+makeHaskellTypeWithMaybe ci = do
+  nt <- lookupNewtypeForField ci
+  typ <- case nt of
+    Nothing -> makeRawHaskellType ci
+    Just t -> return $ ConT t
+  return $ (AppT (ConT ''Maybe) typ)
 
 makeHaskellType :: ColumnInfo -> EnvM Type
 makeHaskellType ci = do
@@ -539,19 +550,19 @@ makeOpaleyeModel t r = do
   deriveEq <- lift $ [t| Eq |]
   fields <- mapM (lift.newName.show.columnName) fieldInfos
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] [deriveShow, deriveEq]
-  haskell <- makeHaskellAlias (mkName $ show r) recordPolyName fieldInfos
+  (haskell, haskellWithMaybes) <- makeHaskellAlias (mkName $ show r) recordPolyName fieldInfos
   (pgRead, pgReadWithNulls) <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
   toAllNullable <- lift $ makeAllNullableFunction fieldInfos
   allNull <- lift $ makeAllNullFunction fieldInfos
-  return $ [rec, haskell, pgRead, pgReadWithNulls, pgWrite] ++ toAllNullable ++ allNull
+  return $ [rec, haskell, haskellWithMaybes, pgRead, pgReadWithNulls, pgWrite] ++ toAllNullable ++ allNull
   where
     makeAllNullFunction :: [ColumnInfo] -> Q [Dec]
     makeAllNullFunction fieldInfos = do
       let
         pgReadType = ConT $ (mkName $ show $ makePGReadTypeName r)
         pgReadWithNullsType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
-        toAllNullFuncName = lcFirst $ (show $ makePGReadTypeName r) ++ "ToAllNull"
+        toAllNullFuncName = lcFirst $ (show $ makePGReadTypeName r) ++ "AllNull"
         conversionFunctionSig = SigD (mkName toAllNullFuncName) $ pgReadWithNullsType
         conversionFunction = FunD (mkName toAllNullFuncName) [Clause [] (NormalB conExp) []]
       return $ [conversionFunctionSig, conversionFunction]
@@ -590,10 +601,11 @@ makeOpaleyeModel t r = do
               mkVarExp = VarE $ mkName $ "a" ++ (show ix)
         makePattern :: Pat
         makePattern = ConP (mkName $ show r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) [1..]
-    makeHaskellAlias :: Name -> Name -> [ColumnInfo] -> EnvM Dec
+    makeHaskellAlias :: Name -> Name -> [ColumnInfo] -> EnvM (Dec, Dec)
     makeHaskellAlias hname poly_name fieldInfos = do
       types <- makeHaskellTypes fieldInfos
-      return $ TySynD hname [] (full_type types)
+      maybeTypes <- makeHaskellTypesWithMaybes fieldInfos
+      return $ (TySynD hname [] (full_type types), TySynD (mkName $ (nameBase hname) ++ "WithMaybes") [] (full_type maybeTypes))
       where
         full_type :: [Type] -> Type
         full_type typs = foldl AppT (ConT poly_name) typs
