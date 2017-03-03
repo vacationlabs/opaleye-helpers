@@ -382,10 +382,11 @@ makeLensesForTable t r = do
              else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
         makeLenseName :: String -> String
         makeLenseName (x:xs) = lcFirst $ drop (length $ show r) xs
-        lcFirst :: String -> String
-        lcFirst (x:xs) = (toLower x):xs
-        ucFirst :: String -> String
-        ucFirst (x:xs) = (toUpper x):xs
+        
+lcFirst :: String -> String
+lcFirst (x:xs) = (toLower x):xs
+ucFirst :: String -> String
+ucFirst (x:xs) = (toUpper x):xs
 
 makeOpaleyeTable :: TableName -> TypeName -> EnvM [Dec]
 makeOpaleyeTable t r = do
@@ -465,6 +466,9 @@ makeTablename (TableName t) = t ++ "Table"
 makePGReadTypeName :: TypeName -> TypeName
 makePGReadTypeName (TypeName tn) = TypeName $ tn ++ "PGRead"
 
+makePGReadAllNullableTypeName :: TypeName -> TypeName
+makePGReadAllNullableTypeName tn = let (TypeName t1) = makePGReadTypeName tn in TypeName (t1 ++ "WithNulls")
+
 makePGWriteTypeName :: TypeName -> TypeName
 makePGWriteTypeName (TypeName tn) = TypeName $ tn ++ "PGWrite"
 
@@ -525,9 +529,6 @@ replaceUnderscore ('_':xs) = (replaceUnderscore xs)
 replaceUnderscore (x:xs) = x:(replaceUnderscore xs)
 replaceUnderscore [] = ""
 
-ucFirst :: String -> String
-ucFirst (s:ss) = (toUpper s):ss
-    
 makeOpaleyeModel :: TableName -> TypeName -> EnvM [Dec]
 makeOpaleyeModel t r = do
   (dbInfo, _, _) <- get
@@ -541,8 +542,54 @@ makeOpaleyeModel t r = do
   haskell <- makeHaskellAlias (mkName $ show r) recordPolyName fieldInfos
   (pgRead, pgReadWithNulls) <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
-  return $ [rec, haskell, pgRead, pgReadWithNulls, pgWrite]
+  toAllNullable <- lift $ makeAllNullableFunction fieldInfos
+  toAllNull <- lift $ makeAllNullFunction fieldInfos
+  return $ [rec, haskell, pgRead, pgReadWithNulls, pgWrite] ++ toAllNullable ++ toAllNull
   where
+    makeAllNullFunction :: [ColumnInfo] -> Q [Dec]
+    makeAllNullFunction fieldInfos = do
+      let
+        pgReadType = ConT $ (mkName $ show $ makePGReadTypeName r)
+        pgReadWithNullsType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
+        toAllNullFuncName = lcFirst $ (show $ makePGReadTypeName r) ++ "ToAllNull"
+        conversionFunctionSig = SigD (mkName toAllNullFuncName) $ AppT (AppT ArrowT pgReadType) pgReadWithNullsType
+        conversionFunction = FunD (mkName toAllNullFuncName) [Clause [makePattern] (NormalB conExp) []]
+      return $ [conversionFunctionSig, conversionFunction]
+      where
+        conExp :: Exp
+        conExp = foldl AppE (ConE $ mkName $ show r) $ getFieldExps
+        getFieldExps :: [Exp]
+        getFieldExps = zipWith getFieldExp fieldInfos [1..]
+          where
+          getFieldExp :: ColumnInfo -> Int -> Exp
+          getFieldExp ci ix = (VarE $ mkName "Opaleye.null")
+            where
+              mkVarExp :: Exp
+              mkVarExp = VarE $ mkName $ "a" ++ (show ix)
+        makePattern :: Pat
+        makePattern = ConP (mkName $ show r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) [1..]
+    makeAllNullableFunction :: [ColumnInfo] -> Q [Dec]
+    makeAllNullableFunction fieldInfos = do
+      let
+        pgReadType = ConT $ (mkName $ show $ makePGReadTypeName r)
+        pgReadWithNullsType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
+        toAllNullFuncName = lcFirst $ (show $ makePGReadTypeName r) ++ "ToAllNullable"
+        conversionFunctionSig = SigD (mkName toAllNullFuncName) $ AppT (AppT ArrowT pgReadType) pgReadWithNullsType
+        conversionFunction = FunD (mkName toAllNullFuncName) [Clause [makePattern] (NormalB conExp) []]
+      return $ [conversionFunctionSig, conversionFunction]
+      where
+        conExp :: Exp
+        conExp = foldl AppE (ConE $ mkName $ show r) $ getFieldExps
+        getFieldExps :: [Exp]
+        getFieldExps = zipWith getFieldExp fieldInfos [1..]
+          where
+          getFieldExp :: ColumnInfo -> Int -> Exp
+          getFieldExp ci ix = if ((columnNullable) ci) then mkVarExp else (AppE (VarE $ mkName "toNullable") mkVarExp) 
+            where
+              mkVarExp :: Exp
+              mkVarExp = VarE $ mkName $ "a" ++ (show ix)
+        makePattern :: Pat
+        makePattern = ConP (mkName $ show r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) [1..]
     makeHaskellAlias :: Name -> Name -> [ColumnInfo] -> EnvM Dec
     makeHaskellAlias hname poly_name fieldInfos = do
       types <- makeHaskellTypes fieldInfos
@@ -554,7 +601,7 @@ makeOpaleyeModel t r = do
     makePgReadAlias name modelType fieldInfos = do
       readType <- makePgReadType modelType fieldInfos
       readTypeWithNulls <- makePgReadTypeWithNulls modelType fieldInfos
-      let nameWithNulls = mkName $ (nameBase name) ++ "WithNulls"
+      let nameWithNulls = mkName $ show $ makePGReadAllNullableTypeName r
       return $ (TySynD name [] readType, TySynD nameWithNulls [] readTypeWithNulls)
     makePgReadTypeWithNulls :: Name -> [ColumnInfo] -> EnvM Type
     makePgReadTypeWithNulls modelType fieldInfos = do
