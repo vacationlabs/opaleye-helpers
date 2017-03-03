@@ -543,8 +543,8 @@ makeOpaleyeModel t r = do
   (pgRead, pgReadWithNulls) <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
   toAllNullable <- lift $ makeAllNullableFunction fieldInfos
-  toAllNull <- lift $ makeAllNullFunction fieldInfos
-  return $ [rec, haskell, pgRead, pgReadWithNulls, pgWrite] ++ toAllNullable ++ toAllNull
+  allNull <- lift $ makeAllNullFunction fieldInfos
+  return $ [rec, haskell, pgRead, pgReadWithNulls, pgWrite] ++ toAllNullable ++ allNull
   where
     makeAllNullFunction :: [ColumnInfo] -> Q [Dec]
     makeAllNullFunction fieldInfos = do
@@ -552,8 +552,8 @@ makeOpaleyeModel t r = do
         pgReadType = ConT $ (mkName $ show $ makePGReadTypeName r)
         pgReadWithNullsType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
         toAllNullFuncName = lcFirst $ (show $ makePGReadTypeName r) ++ "ToAllNull"
-        conversionFunctionSig = SigD (mkName toAllNullFuncName) $ AppT (AppT ArrowT pgReadType) pgReadWithNullsType
-        conversionFunction = FunD (mkName toAllNullFuncName) [Clause [makePattern] (NormalB conExp) []]
+        conversionFunctionSig = SigD (mkName toAllNullFuncName) $ pgReadWithNullsType
+        conversionFunction = FunD (mkName toAllNullFuncName) [Clause [] (NormalB conExp) []]
       return $ [conversionFunctionSig, conversionFunction]
       where
         conExp :: Exp
