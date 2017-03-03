@@ -499,7 +499,7 @@ makeNewTypes = do
       makeNewType' (TypeName name) = do
         let bang = Bang NoSourceUnpackedness NoSourceStrictness
         haskellType <- makeRawHaskellType ci
-        return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show]
+        return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show, ConT ''Eq]
 
 makeFieldName :: TypeName -> ColumnName -> String
 makeFieldName (TypeName modelName) (ColumnName (s:ss)) = "_" ++ (toLower <$> modelName) ++ (toUpper s:replaceUnderscore ss)
@@ -519,8 +519,9 @@ makeOpaleyeModel t r = do
   let recordPolyName = mkName $ show $ makePolyName r
   let fieldInfos = getFieldInfosForTable dbInfo t
   deriveShow <- lift $ [t| Show |]
+  deriveEq <- lift $ [t| Eq |]
   fields <- mapM (lift.newName.show.columnName) fieldInfos
-  let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] [deriveShow]
+  let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] [deriveShow, deriveEq]
   haskell <- makeHaskellAlias (mkName $ show r) recordPolyName fieldInfos
   pgRead <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
