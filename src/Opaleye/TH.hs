@@ -483,6 +483,9 @@ makePGReadAllNullableTypeName tn = let (TypeName t1) = makePGReadTypeName tn in 
 makePGWriteTypeName :: TypeName -> TypeName
 makePGWriteTypeName (TypeName tn) = TypeName $ tn ++ "PGWrite"
 
+makeHaskellNameWithMaybes :: TypeName -> TypeName
+makeHaskellNameWithMaybes (TypeName tn) = TypeName $ tn ++ "WithMaybes"
+
 makeAdapterName :: TypeName -> String
 makeAdapterName (TypeName mn) = 'p':mn
 
@@ -555,7 +558,8 @@ makeOpaleyeModel t r = do
   pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
   toAllNullable <- lift $ makeAllNullableFunction fieldInfos
   allNull <- lift $ makeAllNullFunction fieldInfos
-  return $ [rec, haskell, haskellWithMaybes, pgRead, pgReadWithNulls, pgWrite] ++ toAllNullable ++ allNull
+  withMaybsToMaybeHaskell <- lift $ makeWithMaybesToHaskell fieldInfos
+  return $ [rec, haskell, haskellWithMaybes, pgRead, pgReadWithNulls, pgWrite] ++ toAllNullable ++ allNull ++ withMaybsToMaybeHaskell
   where
     makeAllNullFunction :: [ColumnInfo] -> Q [Dec]
     makeAllNullFunction fieldInfos = do
@@ -609,6 +613,34 @@ makeOpaleyeModel t r = do
       where
         full_type :: [Type] -> Type
         full_type typs = foldl AppT (ConT poly_name) typs
+    makeWithMaybesToHaskell :: [ColumnInfo] -> Q [Dec]
+    makeWithMaybesToHaskell fieldInfos = do
+      let
+        TypeName hname = r
+        withMaybesName = ConT $ (mkName $ show $ makeHaskellNameWithMaybes r)
+        unMaybefyFunctionName = lcFirst $ hname ++ "UnMaybefy"
+        unMaybefyFunctionSig = SigD (mkName unMaybefyFunctionName) $ AppT (AppT ArrowT withMaybesName) (AppT (ConT ''Maybe) (ConT $ mkName hname))
+        unMaybefyFunction = FunD (mkName unMaybefyFunctionName) [
+          Clause [makeNothingPattern] (NormalB $ ConE (mkName "Nothing")) [],
+          Clause [makePattern] (NormalB $ funExp) []
+          ]
+        unMaybefyFunctionJust = FunD (mkName unMaybefyFunctionName) []
+      return $ [unMaybefyFunctionSig, unMaybefyFunction]
+      where
+        funExp :: Exp
+        funExp = AppE (ConE (mkName "Just")) $ foldl AppE (ConE $ mkName $ show r) $ getFieldExps
+        makePattern :: Pat
+        makePattern = (ConP $ mkName $ show r) $ zipWith getFieldPat fieldInfos [1..]
+          where
+          getFieldPat :: ColumnInfo -> Int -> Pat
+          getFieldPat ci ix = if ((columnNullable) ci) then mkVarPat else (ConP (mkName "Just")[mkVarPat]) 
+            where
+              mkVarPat :: Pat
+              mkVarPat = VarP $ mkName $ "a" ++ (show ix)
+        getFieldExps :: [Exp]
+        getFieldExps =  VarE <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) [1..]
+        makeNothingPattern :: Pat
+        makeNothingPattern = ConP (mkName $ show r) $ replicate (Prelude.length fieldInfos) $ ConP (mkName "Nothing") []
     makePgReadAlias :: Name -> Name -> [ColumnInfo] -> EnvM (Dec, Dec)
     makePgReadAlias name modelType fieldInfos = do
       readType <- makePgReadType modelType fieldInfos
