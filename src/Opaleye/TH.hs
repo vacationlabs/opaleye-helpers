@@ -71,7 +71,31 @@ type Env = (DbInfo, Options, LensClassGenerated)
 type EnvM a = StateT Env Q a
 
 makePolyName :: TypeName -> TypeName
-makePolyName (TypeName modelName) = TypeName $ "Poly" ++ modelName
+makePolyName (TypeName modelName) = TypeName $ modelName ++ "Poly"
+
+makeTablename :: TableName -> String
+makeTablename (TableName t) = t ++ "Table"
+
+makePGReadTypeName :: TypeName -> TypeName
+makePGReadTypeName (TypeName tn) = TypeName $ tn ++ "PGRead"
+
+makePGReadAllNullableTypeName :: TypeName -> TypeName
+makePGReadAllNullableTypeName tn = let (TypeName t1) = makePGReadTypeName tn in TypeName (t1 ++ "NullableWrapped")
+
+makeToAllNullFuncName :: TypeName -> String
+makeToAllNullFuncName tn = lcFirst $ (show $ makePGReadTypeName tn) ++ "Null"
+
+makeToAllNullableFuncName :: TypeName -> String
+makeToAllNullableFuncName tn = lcFirst $ (show $ makePGReadTypeName tn) ++ "ToNullableWrapped" 
+
+makeUnMaybefyFuncName :: TypeName -> String
+makeUnMaybefyFuncName (TypeName tn) = "unwrapMaybe" ++ (ucFirst tn)
+
+makePGWriteTypeName :: TypeName -> TypeName
+makePGWriteTypeName (TypeName tn) = TypeName $ tn ++ "PGWrite"
+
+makeHaskellNameWithMaybes :: TypeName -> TypeName
+makeHaskellNameWithMaybes (TypeName tn) = TypeName $ tn ++ "MaybeWrapped"
 
 getFieldInfosForTable :: DbInfo -> TableName -> [ColumnInfo]
 getFieldInfosForTable dbInfo tname = fromJust $ lookup tname dbInfo
@@ -476,21 +500,6 @@ makeOpaleyeTable t r = do
             [primaryField] -> Just $ makeFieldName modelName (columnName primaryField)
             _ -> Nothing
   
-makeTablename :: TableName -> String
-makeTablename (TableName t) = t ++ "Table"
-
-makePGReadTypeName :: TypeName -> TypeName
-makePGReadTypeName (TypeName tn) = TypeName $ tn ++ "PGRead"
-
-makePGReadAllNullableTypeName :: TypeName -> TypeName
-makePGReadAllNullableTypeName tn = let (TypeName t1) = makePGReadTypeName tn in TypeName (t1 ++ "WithNulls")
-
-makePGWriteTypeName :: TypeName -> TypeName
-makePGWriteTypeName (TypeName tn) = TypeName $ tn ++ "PGWrite"
-
-makeHaskellNameWithMaybes :: TypeName -> TypeName
-makeHaskellNameWithMaybes (TypeName tn) = TypeName $ tn ++ "WithMaybes"
-
 makeAdapterName :: TypeName -> String
 makeAdapterName (TypeName mn) = 'p':mn
 
@@ -558,7 +567,7 @@ makeOpaleyeModel t r = do
   deriveEq <- lift $ [t| Eq |]
   fields <- mapM (lift.newName.show.columnName) fieldInfos
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] [deriveShow, deriveEq]
-  (haskell, haskellWithMaybes) <- makeHaskellAlias (mkName $ show r) recordPolyName fieldInfos
+  (haskell, haskellWithMaybes) <- makeHaskellAlias r recordPolyName fieldInfos
   (pgRead, pgReadWithNulls) <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
   toAllNullable <- lift $ makeAllNullableFunction fieldInfos
@@ -571,7 +580,7 @@ makeOpaleyeModel t r = do
       let
         pgReadType = ConT $ (mkName $ show $ makePGReadTypeName r)
         pgReadWithNullsType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
-        toAllNullFuncName = lcFirst $ (show $ makePGReadTypeName r) ++ "AllNull"
+        toAllNullFuncName = makeToAllNullFuncName r
         conversionFunctionSig = SigD (mkName toAllNullFuncName) $ pgReadWithNullsType
         conversionFunction = FunD (mkName toAllNullFuncName) [Clause [] (NormalB conExp) []]
       return $ [conversionFunctionSig, conversionFunction]
@@ -593,7 +602,7 @@ makeOpaleyeModel t r = do
       let
         pgReadType = ConT $ (mkName $ show $ makePGReadTypeName r)
         pgReadWithNullsType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
-        toAllNullFuncName = lcFirst $ (show $ makePGReadTypeName r) ++ "ToAllNullable"
+        toAllNullFuncName = makeToAllNullableFuncName r
         conversionFunctionSig = SigD (mkName toAllNullFuncName) $ AppT (AppT ArrowT pgReadType) pgReadWithNullsType
         conversionFunction = FunD (mkName toAllNullFuncName) [Clause [makePattern] (NormalB conExp) []]
       return $ [conversionFunctionSig, conversionFunction]
@@ -610,11 +619,13 @@ makeOpaleyeModel t r = do
               mkVarExp = VarE $ mkName $ "a" ++ (show ix)
         makePattern :: Pat
         makePattern = ConP (mkName $ show r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) [1..]
-    makeHaskellAlias :: Name -> Name -> [ColumnInfo] -> EnvM (Dec, Dec)
-    makeHaskellAlias hname poly_name fieldInfos = do
+    makeHaskellAlias :: TypeName -> Name -> [ColumnInfo] -> EnvM (Dec, Dec)
+    makeHaskellAlias htname@(TypeName tn) poly_name fieldInfos = do
+      let hname = mkName tn
       types <- makeHaskellTypes fieldInfos
       maybeTypes <- makeHaskellTypesWithMaybes fieldInfos
-      return $ (TySynD hname [] (full_type types), TySynD (mkName $ (nameBase hname) ++ "WithMaybes") [] (full_type maybeTypes))
+      let (TypeName maybeWrappedName) = makeHaskellNameWithMaybes htname
+      return $ (TySynD hname [] (full_type types), TySynD (mkName $ maybeWrappedName) [] (full_type maybeTypes))
       where
         full_type :: [Type] -> Type
         full_type typs = foldl AppT (ConT poly_name) typs
@@ -623,7 +634,7 @@ makeOpaleyeModel t r = do
       let
         TypeName hname = r
         withMaybesName = ConT $ (mkName $ show $ makeHaskellNameWithMaybes r)
-        unMaybefyFunctionName = lcFirst $ hname ++ "UnMaybefy"
+        unMaybefyFunctionName = makeUnMaybefyFuncName r
         unMaybefyFunctionSig = SigD (mkName unMaybefyFunctionName) $ AppT (AppT ArrowT withMaybesName) (AppT (ConT ''Maybe) (ConT $ mkName hname))
         unMaybefyFunction = FunD (mkName unMaybefyFunctionName) [
           Clause [makeNothingPattern] (NormalB $ ConE (mkName "Nothing")) [],
