@@ -15,6 +15,8 @@ where
 
 import Database.PostgreSQL.Simple
 import Database.PostgreSQL.Simple.FromField
+import Database.PostgreSQL.Simple.HStore
+import Database.PostgreSQL.Simple.ToField
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax hiding (lift)
 import Control.Monad.IO.Class
@@ -25,7 +27,10 @@ import Data.List
 import Data.Profunctor.Product.TH (makeAdaptorAndInstance)
 import Data.Profunctor.Product.Default
 import Opaleye
-import Data.Text (Text)
+import Opaleye.Internal.PGTypes
+import qualified Opaleye.Internal.HaskellDB.Sql.Default as HDBD
+import qualified Data.ByteString.Char8 as BS
+import Data.Text (Text, concat, intercalate)
 import Data.Typeable
 import Data.Aeson
 import Data.Scientific
@@ -162,7 +167,7 @@ getPGColumnType ct = lift $ (getType ct)
         "uuid"        -> ConT <$> fromJust <$> lookupTypeName "PGUuid"
         "json"        -> ConT <$> fromJust <$> lookupTypeName "PGJson"
         "jsonb"       -> ConT <$> fromJust <$> lookupTypeName "PGJsonb"
-        "hstore"      -> ConT <$> fromJust <$> lookupTypeName "PGJsonb"
+        "hstore"      -> ConT <$> fromJust <$> lookupTypeName "PGJson"
         "varchar"     -> ConT <$> fromJust <$> lookupTypeName "PGText"
         "oid"         -> ConT <$> fromJust <$> lookupTypeName "PGInt8"
         "inet"        -> ConT <$> fromJust <$> lookupTypeName "PGText"
@@ -240,7 +245,7 @@ getHaskellTypeFor ct = case ct of
   "uuid"        -> lift $ (ConT) <$> safeLookup' "UUID"
   "json"        -> lift $ (ConT) <$> safeLookup' "Value"
   "jsonb"       -> lift $ (ConT) <$> safeLookup' "Value"
-  "hstore"      -> lift $ (ConT) <$> safeLookup' "Value"
+  "hstore"      -> lift $ (ConT) <$> safeLookup' "HStoreList"
   "varchar"     -> lift $ (ConT) <$> safeLookup' "Text"
   "_varchar"    -> (AppT array) <$> getHaskellTypeFor "varchar"
   "_text"       -> (AppT array) <$> getHaskellTypeFor "varchar"
@@ -296,8 +301,8 @@ makeOpaleyeTables' env = do
     let names = fst <$> tableOptions options
     let models = (modelName.snd) <$> tableOptions options
     typeClassDecs <- makeModelTypeClass
-    tables <- concat <$> zipWithM makeOpaleyeTable names models
-    lenses <- concat <$> zipWithM makeLensesForTable names models
+    tables <- Data.List.concat <$> zipWithM makeOpaleyeTable names models
+    lenses <- Data.List.concat <$> zipWithM makeLensesForTable names models
     return $ typeClassDecs ++ tables ++ lenses) env
   return decs
   where
@@ -501,13 +506,13 @@ makeOpaleyeModels' env = fst <$> runStateT (do
   let names = fst <$> tableOptions options
   let models = (modelName.snd) <$> tableOptions options
   instances <- makeNewtypeInstances
-  decs <- concat <$> zipWithM makeOpaleyeModel names models
+  decs <- Data.List.concat <$> zipWithM makeOpaleyeModel names models
   return $ newTypeDecs ++ decs ++ instances) env
 
 collectNewTypes :: EnvM [(ColumnInfo, TypeName)]
 collectNewTypes = do
   (connInfo, options, _) <- get
-  concat <$> mapM getNewTypes (tableOptions options)
+  Data.List.concat <$> mapM getNewTypes (tableOptions options)
   where
     getNewTypes :: (TableName, TableOptions) -> EnvM [(ColumnInfo, TypeName)]
     getNewTypes (tbName, tbOptions) = do
@@ -674,7 +679,7 @@ makeOpaleyeModel t r = do
 makeNewtypeInstances :: EnvM [Dec]
 makeNewtypeInstances = do
   newTypes <- groupDups <$> collectNewTypes
-  concat  <$> (mapM makeInstancesForNewtypeColumn newTypes)
+  Data.List.concat  <$> (mapM makeInstancesForNewtypeColumn newTypes)
   where
     groupDups :: [(ColumnInfo, TypeName)] -> [(ColumnInfo, Name)]
     groupDups pairs = fmap collect $ nub $ fmap snd pairs
@@ -794,6 +799,16 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (show $ makePolyName x)) models
   rationalIns <- lift $ [d|
+    instance Default Constant HStoreList (Column PGJson) where
+      def = Constant f1
+        where
+        f1 :: HStoreList -> Column PGJson
+        f1 hl = castToType "hstore" $ toStringLit hl
+        toStringLit :: HStoreList -> String
+        toStringLit hl = let (Escape bs) = toField hl in HDBD.quote (BS.unpack bs)
+
+    instance QueryRunnerColumnDefault PGJson HStoreList where
+      queryRunnerColumnDefault = fieldQueryRunnerColumn
     instance QueryRunnerColumnDefault PGNumeric Scientific where
       queryRunnerColumnDefault = fieldQueryRunnerColumn
     instance Default Constant Scientific (Column PGNumeric) where
@@ -802,6 +817,6 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
         f1 :: Scientific -> (Column PGNumeric)
         f1 x = unsafeCoerceColumn $ pgDouble $ toRealFloat x
     |]
-  decs <- lift $ (concat <$> zipWithM makeAdaptorAndInstance an pn)
+  decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
   return $ decs ++ rationalIns
   ) env
