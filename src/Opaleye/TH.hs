@@ -57,7 +57,7 @@ instance Show TypeName where
 
 data Options = Options { tableOptions :: [(TableName, TableOptions)] }
 
-data TableOptions = TableOptions { modelName :: TypeName, overrideDefaultTypes :: [(ColumnName, TypeName)], protectedFields :: [ColumnName] }
+data TableOptions = TableOptions { modelName :: TypeName, overrideDefaultTypes :: [(ColumnName, TypeName)], protectedFields :: [ColumnName], autoDeriveInstances :: [TypeName] }
 
 type ColumnType = String
 
@@ -559,14 +559,13 @@ replaceUnderscore [] = ""
 
 makeOpaleyeModel :: TableName -> TypeName -> EnvM [Dec]
 makeOpaleyeModel t r = do
-  (dbInfo, _, _) <- get
+  (dbInfo, options, _) <- get
   let recordName = mkName $ show r
   let recordPolyName = mkName $ show $ makePolyName r
   let fieldInfos = getFieldInfosForTable dbInfo t
-  deriveShow <- lift $ [t| Show |]
-  deriveEq <- lift $ [t| Eq |]
+  deriveInstances <- lift $ mapM (fmap (ConT).safeLookupTypeName) $ autoDeriveInstances $ getTableOptions t options
   fields <- mapM (lift.newName.show.columnName) fieldInfos
-  let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] [deriveShow, deriveEq]
+  let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] deriveInstances
   (haskell, haskellWithMaybes) <- makeHaskellAlias r recordPolyName fieldInfos
   (pgRead, pgReadWithNulls) <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
   pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
