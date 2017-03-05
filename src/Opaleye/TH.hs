@@ -547,7 +547,7 @@ makeNewTypes = do
       makeNewType' (TypeName name) = do
         let bang = Bang NoSourceUnpackedness NoSourceStrictness
         haskellType <- makeRawHaskellType ci
-        return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show, ConT ''Eq]
+        return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang, haskellType)]) [ConT ''Show, ConT ''Eq, ConT ''Ord]
 
 makeFieldName :: TypeName -> ColumnName -> String
 makeFieldName (TypeName modelName) (ColumnName (s:ss)) = "_" ++ (toLower <$> modelName) ++ (toUpper s:replaceUnderscore ss)
