@@ -57,11 +57,24 @@ instance Show TypeName where
 
 data Options = Options { tableOptions :: [(TableName, TableOptions)] }
 
-data TableOptions = TableOptions { modelName :: TypeName, overrideDefaultTypes :: [(ColumnName, TypeName)], protectedFields :: [ColumnName], autoDeriveInstances :: [TypeName] }
+data TableOptions = TableOptions {
+  modelName :: TypeName
+  , overrideDefaultTypes :: [(ColumnName, TypeName)]
+  , protectedFields :: [ColumnName]
+  , autoDeriveInstances :: [TypeName] 
+  , ignoreNullables :: [ColumnName]
+}
 
 type ColumnType = String
 
-data ColumnInfo = ColumnInfo { columnTableName :: TableName, columnName ::ColumnName, columnType :: ColumnType, columnDefault :: Bool, columnNullable :: Bool, columnPrimary :: Bool} deriving (Show)
+data ColumnInfo = ColumnInfo {
+  columnTableName :: TableName
+  , columnName ::ColumnName
+  , columnType :: ColumnType
+  , columnDefault :: Bool
+  , columnNullable :: Bool
+  , columnPrimary :: Bool
+} deriving (Show)
 
 type TableInfo = (TableName, [ColumnInfo])
 type DbInfo = [TableInfo]
@@ -103,7 +116,17 @@ getFieldInfosForTable dbInfo tname = fromJust $ lookup tname dbInfo
 getDbinfo :: ConnectInfo -> Options -> Q DbInfo
 getDbinfo connInfo options = runIO $ do
   conn <- connect connInfo
-  Prelude.mapM (getColumns conn) (fst <$> tableOptions options)
+  Prelude.mapM (fmap overrideNullables . getColumns conn) (fst <$> tableOptions options)
+  where
+  overrideNullables :: TableInfo -> TableInfo
+  overrideNullables (tn, cis) = case nullIgnored of
+    Just ni -> (tn, fixNullable ni <$> cis)
+    Nothing -> (tn, cis)
+    where
+      fixNullable :: [ColumnName] -> ColumnInfo -> ColumnInfo
+      fixNullable ni ci = if (columnName ci) `elem` ni then ci { columnNullable = False } else ci
+      nullIgnored :: Maybe [ColumnName]
+      nullIgnored = ignoreNullables <$> lookup tn (tableOptions options)
 
 getColumns :: Connection -> TableName -> IO TableInfo
 getColumns conn (TableName tname) = do
