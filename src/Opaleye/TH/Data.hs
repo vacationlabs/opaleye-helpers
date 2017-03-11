@@ -30,7 +30,10 @@ data TableOptions = TableOptions {
 
 data Transformation = Transformation {
   targetField :: ColumnName,
+  targetType :: TypeName,
   sourceFields :: [ColumnName],
+  sourcesToTarget :: Name,
+  targetTosources :: Name,
   includeSources :: Bool
 }
 
