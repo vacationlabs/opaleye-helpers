@@ -130,17 +130,26 @@ makeTransformationFunction
           where
             isPresent :: ColumnName -> Bool
             isPresent cn = isJust $ lookup cn fieldsAndTypes
-        (pat, exp) = if validate then (foldl makePatternAndExp ([], VarE sourcesToTarget) $ zip fieldsAndTypes [1..]) else (error $ "One of the source fields in " ++ (show sourceFields) ++ " could not be found")
+        (pat, expl) = if validate then (foldl makePatternAndExp ([], []) $ zip fieldsAndTypes [1..]) else (error $ "One of the source fields in " ++ (show sourceFields) ++ " could not be found")
+        fullExp = foldl AppE (VarE sourcesToTarget) $ sortAndExtractExp expl
+          where
+            sortAndExtractExp :: [(ColumnName, Exp)] -> [Exp]
+            sortAndExtractExp ls = fmap expForCol sourceFields
+              where
+              expForCol :: ColumnName -> Exp
+              expForCol cn = case (lookup cn ls) of
+                Just exp -> exp
+                _ -> error "Cannot find exp for column"
         pattern = ConP sourceName $ reverse pat
-        in FunD (mkName (targetFieldName ++ "LtR")) [Clause [pattern] (NormalB exp) []]
+        in FunD (mkName (targetFieldName ++ "LtR")) [Clause [pattern] (NormalB fullExp) []]
           where
           makeVarName :: Int -> Name
           makeVarName index = mkName ("a" ++ show index)
-          makePatternAndExp :: ([Pat], Exp) -> ((ColumnName, Type), Int) -> ([Pat], Exp)
+          makePatternAndExp :: ([Pat], [(ColumnName, Exp)]) -> ((ColumnName, Type), Int) -> ([Pat], [(ColumnName, Exp)])
           makePatternAndExp (pl, exp)((cn, t), index) = let
             tr = (cn `elem` sourceFields)
             p = if tr then VarP $ makeVarName index  else WildP
-            x = if tr then AppE exp (VarE $ makeVarName index) else exp
+            x = if tr then (cn, VarE $ makeVarName index):exp else exp
             in (p:pl, x)
       makeRtL :: Dec
       makeRtL = let
