@@ -8,6 +8,7 @@ import Language.Haskell.TH.Syntax
 import Opaleye.TH.Data
 import Data.Char
 import Debug.Trace
+import Data.Maybe
 
 transform :: Name -> TypeName -> [Transformation] -> Q [Dec]
 transform name targetName transformation = do
@@ -130,7 +131,11 @@ makeTransformationFunction
     where
       makeLtR :: Dec
       makeLtR = let
-        (pat, exp) = foldl makePatternAndExp ([], VarE sourcesToTarget) $ zip fieldsAndTypes [1..]
+        validate = and $ isPresent <$> sourceFields
+          where
+            isPresent :: ColumnName -> Bool
+            isPresent cn = isJust $ lookup cn fieldsAndTypes
+        (pat, exp) = if validate then (foldl makePatternAndExp ([], VarE sourcesToTarget) $ zip fieldsAndTypes [1..]) else (error $ "One of the source fields in " ++ (show sourceFields) ++ " could not be found")
         pattern = ConP sourceName $ reverse pat
         in FunD (mkName (targetFieldName ++ "LtR")) [Clause [pattern] (NormalB exp) []]
           where
