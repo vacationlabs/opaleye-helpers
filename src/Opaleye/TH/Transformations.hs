@@ -19,20 +19,17 @@ transform name targetName transformation = do
         recordName = getRecordName typeTree
         recordArgs = getTypeArgs typeTree
         in do
-          info <- reify recordName
-          (r, newToOld, a) <- getTransformerFunctions info recordArgs transformation targetName
+          TyConI datad <- reify recordName
+          (r, newToOld, a) <- getTransformerFunctions datad recordArgs transformation targetName
           let rs = (\(ColumnName a, b, c) -> (mkName a, (b, c))) <$> a
-          return [r, mlTr newToOld r info recordArgs rs, mrTl transformation ((\(a,b)-> (b,a)) <$> newToOld) r info rs]
-          --traceShow ((\(a, b, c) -> a) <$> rs) $ return ()
-          --return [r]
-          --return $ [r] ++ concatMap (\(a, b, c) -> [b, c]) rs
+          return [r, mlTr newToOld r datad recordArgs rs, mrTl transformation ((\(a,b)-> (b,a)) <$> newToOld) r datad rs]
     _ -> error "Require a type synonym"
     where
-      mlTr :: [(Name, Maybe ColumnName)] -> Dec -> Info -> [Type] -> [(Name, (Dec, Dec))] -> Dec
+      mlTr :: [(Name, Maybe ColumnName)] -> Dec -> Dec -> [Type] -> [(Name, (Dec, Dec))] -> Dec
       mlTr 
         newToOld
         (DataD [] _ [] Nothing [RecC tConName newFields] [])
-        (TyConI (datad@(DataD [] _ _ _ [RecC conName _] [])))
+        (datad@(DataD [] _ _ _ [RecC conName _] []))
         typeargs l = FunD (mkName "mltr") [Clause  [pattern] (NormalB exp) allFunctions]
           where
             allFunctions = fmap (\(_, (a, b)) -> a) l
@@ -49,12 +46,12 @@ transform name targetName transformation = do
                     Just (Just colname) -> case lookup colname indexedFieldNames of
                       Just index -> VarE $ mkName ("a" ++ show index)
                     _ -> error "Error"
-      mrTl :: [Transformation] -> [(Maybe ColumnName, Name)] -> Dec -> Info -> [(Name, (Dec, Dec))] -> Dec
+      mrTl :: [Transformation] -> [(Maybe ColumnName, Name)] -> Dec -> Dec -> [(Name, (Dec, Dec))] -> Dec
       mrTl
         transformations
         oldToNew
         (DataD [] _ [] Nothing [RecC tConName newFields] [])
-        (TyConI (datad@(DataD [] _ _ _ [RecC conName rightFields] [])))
+        (datad@(DataD [] _ _ _ [RecC conName rightFields] []))
         l
         =
         FunD (mkName "mrtl") [Clause  [pattern] (NormalB exp) allFunctions]
@@ -106,10 +103,8 @@ getTypeArgs = reverse.getTypeArgs'
   getTypeArgs' (ConT n) =  []
   getTypeArgs' (AppT a b) =  (b:getTypeArgs' a)
 
-getTransformerFunctions :: Info -> [Type] -> [Transformation] -> TypeName -> Q (Dec, [(Name, Maybe ColumnName)], [(ColumnName, Dec, Dec)])
-getTransformerFunctions info args transformation (TypeName target) = do
-  case info of
-    TyConI dec@(DataD [] _ _ Nothing [RecC conName fieldTypes] []) -> do
+getTransformerFunctions :: Dec -> [Type] -> [Transformation] -> TypeName -> Q (Dec, [(Name, Maybe ColumnName)], [(ColumnName, Dec, Dec)])
+getTransformerFunctions dec@(DataD [] _ _ Nothing [RecC conName fieldTypes] []) args transformation (TypeName target) = do
       let
         fieldsAndType = getFieldNamesAndTypes dec args
         newFields = makeRecordFields fieldsAndType ("_" ++ (nameBase conName)) ("_" ++ (lcFirst target)) transformation
@@ -117,7 +112,7 @@ getTransformerFunctions info args transformation (TypeName target) = do
         newFieldsMapping = (\((a, b, c), d) -> (a, d)) <$> newFields
         targetRecordD = DataD [] (mkName target) [] Nothing [RecC (mkName target) newFieldsWithoutMapping] [] 
       return $ (targetRecordD, newFieldsMapping, (makeTransformationFunction conName fieldsAndType newFieldsWithoutMapping (mkName target)) <$> transformation)
-    _ -> error "Require a type constructor"
+getTransformerFunctions _ _ _ _ = error "Require a type constructor"
 
 emptyFunc = FunD (mkName "s") [Clause [] (NormalB $ LitE $ IntegerL 3) []]
 
