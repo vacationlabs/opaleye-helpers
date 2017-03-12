@@ -5,13 +5,12 @@ module Opaleye.TH (
       makeOpaleyeModels
     , makeOpaleyeTables
     , makeAdaptorAndInstances
+    , makeSecondaryModel
     , TableName(..)
     , ColumnName(..)
     , TypeName(..)
     , Options(..)
     , TableOptions(..)
-    , SecondaryModel(..)
-    , Transformation(..)
     )
 where 
 
@@ -45,7 +44,7 @@ import Control.Monad.State.Lazy
 import Control.Lens
 
 import Opaleye.TH.Data
-import Opaleye.TH.Transformations
+import qualified Opaleye.TH.Transformations as TR
 
 makePolyName :: TypeName -> TypeName
 makePolyName (TypeName modelName) = TypeName $ modelName ++ "Poly"
@@ -838,3 +837,31 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
   return $ decs ++ rationalIns
   ) env
+
+makeSecondaryModel :: Name -> TypeName -> [Transformation] -> Q [Dec]
+makeSecondaryModel source target transformations = do
+  [rec, mltr, mrtl] <- TR.transform source target transformations
+  let 
+    TypeName targetName  = target
+    defaultT = (ConT $ mkName "Default")
+    queryRunnerT = (ConT $ mkName "QueryRunner")
+    pgReadT = (ConT $ mkName $ (nameBase source ++ "PGRead"))
+    targetT = (ConT $ mkName $ targetName)
+    cnstT = (ConT $ mkName "Constant")
+    instanceHeadQr = AppT (AppT (AppT defaultT queryRunnerT) pgReadT) targetT
+    instanceHeadCon = AppT (AppT (AppT defaultT cnstT) targetT) pgReadT
+  d <- defQr mltr
+  c <- defCons mrtl
+  let 
+    qrInstance = InstanceD Nothing [] instanceHeadQr [d]
+    conInstance = InstanceD Nothing [] instanceHeadCon [c]
+  return $ [rec, qrInstance, conInstance]
+  where
+    defQr :: Dec -> Q Dec
+    defQr fd = do
+      exp <- [e| rmap mltr def |]
+      return $ FunD (mkName "def") [Clause [] (NormalB exp) [fd]]
+    defCons :: Dec -> Q Dec
+    defCons fd = do
+      exp <- [e| lmap mrtl def |]
+      return $ FunD (mkName "def") [Clause [] (NormalB exp) [fd]]

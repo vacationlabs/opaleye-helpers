@@ -28,8 +28,8 @@ transform name targetName transformation = do
       mlTr :: [(Name, Maybe ColumnName)] -> Dec -> Dec -> [Type] -> [(Name, (Dec, Dec))] -> Dec
       mlTr 
         newToOld
-        (DataD [] _ [] Nothing [RecC tConName newFields] [])
-        (datad@(DataD [] _ _ _ [RecC conName _] []))
+        (DataD [] _ [] Nothing [RecC tConName newFields] _)
+        (datad@(DataD [] _ _ _ [RecC conName _] _))
         typeargs l = FunD (mkName "mltr") [Clause  [pattern] (NormalB exp) allFunctions]
           where
             allFunctions = fmap (\(_, (a, b)) -> a) l
@@ -50,8 +50,8 @@ transform name targetName transformation = do
       mrTl
         transformations
         oldToNew
-        (DataD [] _ [] Nothing [RecC tConName newFields] [])
-        (datad@(DataD [] _ _ _ [RecC conName rightFields] []))
+        (DataD [] _ [] Nothing [RecC tConName newFields] _)
+        (datad@(DataD [] _ _ _ [RecC conName rightFields] _))
         l
         =
         FunD (mkName "mrtl") [Clause  [pattern] (NormalB exp) allFunctions]
@@ -104,13 +104,13 @@ getTypeArgs = reverse.getTypeArgs'
   getTypeArgs' (AppT a b) =  (b:getTypeArgs' a)
 
 getTransformerFunctions :: Dec -> [Type] -> [Transformation] -> TypeName -> Q (Dec, [(Name, Maybe ColumnName)], [(ColumnName, Dec, Dec)])
-getTransformerFunctions dec@(DataD [] _ _ Nothing [RecC conName fieldTypes] []) args transformation (TypeName target) = do
+getTransformerFunctions dec@(DataD [] _ _ Nothing [RecC conName fieldTypes] _) args transformation (TypeName target) = do
       let
         fieldsAndType = getFieldNamesAndTypes dec args
         newFields = makeRecordFields fieldsAndType ("_" ++ (nameBase conName)) ("_" ++ (lcFirst target)) transformation
         newFieldsWithoutMapping = fst <$> newFields
         newFieldsMapping = (\((a, b, c), d) -> (a, d)) <$> newFields
-        targetRecordD = DataD [] (mkName target) [] Nothing [RecC (mkName target) newFieldsWithoutMapping] [] 
+        targetRecordD = DataD [] (mkName target) [] Nothing [RecC (mkName target) newFieldsWithoutMapping] [ConT ''Show] 
       return $ (targetRecordD, newFieldsMapping, (makeTransformationFunction conName fieldsAndType newFieldsWithoutMapping (mkName target)) <$> transformation)
 getTransformerFunctions _ _ _ _ = error "Require a type constructor"
 
@@ -185,7 +185,7 @@ makeRecordFields fieldsAndTypes rmPrifix addPrx transformations = let
 
 getFieldNamesAndTypes :: Dec -> [Type] -> [(ColumnName, Type)]
 getFieldNamesAndTypes cons args = case cons of
-  DataD [] recName argvs Nothing [RecC _ fieldTypes] [] -> 
+  DataD [] recName argvs Nothing [RecC _ fieldTypes] _ -> 
     let
       fls = makeFieldNamesAndTypes fieldTypes argvals
       argvals = zip (extractTVName <$> argvs) args
