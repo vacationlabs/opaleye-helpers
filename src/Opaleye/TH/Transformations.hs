@@ -9,7 +9,6 @@ import Opaleye.TH.Data
 import Data.Char
 import Debug.Trace
 
---transform :: Name -> TypeName -> [Transformation] -> Q (Dec, Dec, Dec)
 transform :: Name -> TypeName -> [Transformation] -> Q [Dec]
 transform name targetName transformation = do
   info <- reify name
@@ -19,9 +18,79 @@ transform name targetName transformation = do
         recordName = getRecordName typeTree
         recordArgs = getTypeArgs typeTree
         in do
-          (r, rs) <- getTransformerFunctions recordName recordArgs transformation targetName
-          return $ [r] ++ concatMap (\(a, b, c) -> [b, c]) rs
+          info <- reify recordName
+          (r, newToOld, a) <- getTransformerFunctions info recordArgs transformation targetName
+          let rs = (\(ColumnName a, b, c) -> (mkName a, (b, c))) <$> a
+          return [r, mlTr newToOld r info recordArgs rs, mrTl transformation ((\(a,b)-> (b,a)) <$> newToOld) r info rs]
+          --traceShow ((\(a, b, c) -> a) <$> rs) $ return ()
+          --return [r]
+          --return $ [r] ++ concatMap (\(a, b, c) -> [b, c]) rs
     _ -> error "Require a type synonym"
+    where
+      mlTr :: [(Name, Maybe ColumnName)] -> Dec -> Info -> [Type] -> [(Name, (Dec, Dec))] -> Dec
+      mlTr 
+        newToOld
+        (DataD [] _ [] Nothing [RecC tConName newFields] [])
+        (TyConI (datad@(DataD [] _ _ _ [RecC conName _] [])))
+        typeargs l = FunD (mkName "mltr") [Clause  [pattern] (NormalB exp) allFunctions]
+          where
+            allFunctions = fmap (\(_, (a, b)) -> a) l
+            fieldNameAndTypes = getFieldNamesAndTypes datad typeargs
+            indexedFieldNames :: [(ColumnName, Int)]
+            indexedFieldNames = zip (fst <$> fieldNameAndTypes) [1..]
+            pattern = AsP (mkName "x") $ ConP conName (fmap (\(_, a) -> VarP $ mkName ("a" ++ (show a))) $ indexedFieldNames)
+            exp = foldl AppE (ConE tConName) (mkExp <$> newFields)
+              where
+                mkExp :: (Name, Bang, Type) -> Exp
+                mkExp (name, _, _) = case lookup name l of
+                  Just (FunD n _, b) -> AppE (VarE n) (VarE $ mkName "x")
+                  Nothing -> case lookup name newToOld of
+                    Just (Just colname) -> case lookup colname indexedFieldNames of
+                      Just index -> VarE $ mkName ("a" ++ show index)
+                    _ -> error "Error"
+      mrTl :: [Transformation] -> [(Maybe ColumnName, Name)] -> Dec -> Info -> [(Name, (Dec, Dec))] -> Dec
+      mrTl
+        transformations
+        oldToNew
+        (DataD [] _ [] Nothing [RecC tConName newFields] [])
+        (TyConI (datad@(DataD [] _ _ _ [RecC conName rightFields] [])))
+        l
+        =
+        FunD (mkName "mrtl") [Clause  [pattern] (NormalB exp) allFunctions]
+          where
+            indexedFieldNames :: [(ColumnName, Int)]
+            indexedFieldNames = zip ((\(a, _, _) -> ColumnName $ nameBase a) <$> newFields) [1..]
+            pattern = AsP (mkName "x") $ ConP tConName (fmap (\(_, a) -> VarP $ mkName ("a" ++ (show a))) $ indexedFieldNames)
+            exp = traceShow indexTuplePatterns $ foldl AppE (ConE conName) (mkExp <$> rightFields)
+              where
+                indexTuplePatterns = foldl indexTuplePattern [] transformations
+                indexTuplePattern :: [(ColumnName, String)] -> Transformation -> [(ColumnName, String)]
+                indexTuplePattern l (Transformation {targetField = ColumnName tf, sourceFields = sf}) =
+                  let
+                    sourceVars :: [(ColumnName, String)]
+                    sourceVars = zip sf $ fmap (\(a, b) -> tf ++ (show b)) $ zip (replicate (length sf) tf) [1..] 
+                    in l ++ sourceVars
+                mkExp :: (Name, Bang, Type) -> Exp
+                mkExp (name, _, _) = case lookup (Just $ ColumnName $ nameBase name) oldToNew of
+                  Just newName -> case lookup (ColumnName $ nameBase newName) indexedFieldNames of
+                    Just index -> VarE $ mkName ("a" ++ show index)
+                    _ -> error "error"
+                  Nothing -> case lookup (ColumnName $ nameBase name) indexTuplePatterns of
+                    Just argName -> VarE $ mkName argName
+                    _ -> error "error"
+            allFunctions = (fmap (\(_, (a, b)) -> b) l) ++ (makeExtractionFunctions transformations)
+            makeExtractionFunctions :: [Transformation] -> [Dec]
+            makeExtractionFunctions xs = (makeTransformationFunction "asd") <$> xs
+              where
+                makeTransformationFunction :: String -> Transformation -> Dec
+                makeTransformationFunction recName (Transformation { targetField = ColumnName tf, sourceFields = sf })
+                  = ValD pattern (NormalB $ AppE (VarE mkFn) (VarE $ mkName "x")) []
+                  where
+                    mkTupeCon = "(" ++ (replicate (length sf -1) ',') ++ ")"
+                    pattern = ConP (mkName $ mkTupeCon) (((VarP).mkName) <$> tfCounted)
+                    tfCounted = (\(a, b) -> (a ++ (show b))) <$> zip (replicate (length sf) tf) [1..]
+                    mkFn :: Name
+                    mkFn = (mkName $ tf ++ "RtL")
 
 -- returns innermost ConT
 getRecordName :: Type -> Name
@@ -36,21 +105,22 @@ getTypeArgs = reverse.getTypeArgs'
   getTypeArgs' (ConT n) =  []
   getTypeArgs' (AppT a b) =  (b:getTypeArgs' a)
 
-getTransformerFunctions :: Name -> [Type] -> [Transformation] -> TypeName -> Q (Dec, [(ColumnName, Dec, Dec)])
-getTransformerFunctions recName args transformation (TypeName target) = do
-  info <- reify recName
+getTransformerFunctions :: Info -> [Type] -> [Transformation] -> TypeName -> Q (Dec, [(Name, Maybe ColumnName)], [(ColumnName, Dec, Dec)])
+getTransformerFunctions info args transformation (TypeName target) = do
   case info of
     TyConI dec@(DataD [] _ _ Nothing [RecC conName fieldTypes] []) -> do
       let
         fieldsAndType = getFieldNamesAndTypes dec args
         newFields = makeRecordFields fieldsAndType ("_" ++ (nameBase conName)) ("_" ++ (lcFirst target)) transformation
-        targetRecordD = DataD [] (mkName target) [] Nothing [RecC (mkName target) newFields] [] 
-      return $ (targetRecordD, (makeTransformationFunction conName fieldsAndType newFields (mkName target)) <$> transformation)
+        newFieldsWithoutMapping = fst <$> newFields
+        newFieldsMapping = (\((a, b, c), d) -> (a, d)) <$> newFields
+        targetRecordD = DataD [] (mkName target) [] Nothing [RecC (mkName target) newFieldsWithoutMapping] [] 
+      return $ (targetRecordD, newFieldsMapping, (makeTransformationFunction conName fieldsAndType newFieldsWithoutMapping (mkName target)) <$> transformation)
     _ -> error "Require a type constructor"
 
 emptyFunc = FunD (mkName "s") [Clause [] (NormalB $ LitE $ IntegerL 3) []]
 
-makeTransformationFunction :: Name -> [(ColumnName, Type)] -> [(Name, Bang, Type)] -> Name -> Transformation -> (ColumnName, Dec, Dec)
+makeTransformationFunction :: Name -> [(ColumnName, Type)] -> [VarBangType] -> Name -> Transformation -> (ColumnName, Dec, Dec)
 makeTransformationFunction
   sourceName
   fieldsAndTypes
@@ -75,29 +145,30 @@ makeTransformationFunction
       makeRtL :: Dec
       makeRtL = let
         pattern = foldl makePattern [] newFields 
-        in FunD (mkName (targetFieldName ++ "RtL")) [Clause [ConP targetName pattern] (NormalB $ AppE (VarE targetTosources) (VarE $ mkName "x")) []]
+        in FunD (mkName (targetFieldName ++ "RtL")) [Clause [ConP targetName (reverse pattern)] (NormalB $ AppE (VarE targetTosources) (VarE $ mkName "x")) []]
           where
           makePattern :: [Pat] -> (Name, Bang, Type) -> [Pat]
           makePattern pl (name, _, _) = let p = if (targetFieldName == (nameBase name)) then (VarP $ mkName "x") else WildP in (p:pl)
     
-makeRecordFields :: [(ColumnName, Type)] -> String -> String -> [Transformation] -> [VarBangType]
+makeRecordFields :: [(ColumnName, Type)] -> String -> String -> [Transformation] -> [(VarBangType, Maybe ColumnName)]
 makeRecordFields fieldsAndTypes rmPrifix addPrx transformations = let
   fieldsRemoved = foldl removeFields fieldsAndTypes transformations
-  prefixRemoved = addPrefix <$> (removePrefix <$> fieldsRemoved)
-  fieldsAdded = foldl addFields prefixRemoved transformations
+  fieldsWithOldMapping = (\(a, b) -> (a, b, Just a)) <$> fieldsRemoved
+  prefixRemoved = addPrefix <$> (removePrefix <$> fieldsWithOldMapping)
+  fieldsAdded = prefixRemoved  ++ (makeNewFields transformations)
   in makeVarBangTypes fieldsAdded
   where
-    removePrefix :: (ColumnName, Type) -> (ColumnName, Type)
-    removePrefix (ColumnName cn, t) = (ColumnName (drop (length rmPrifix) cn), t)
-    addPrefix :: (ColumnName, Type) -> (ColumnName, Type)
-    addPrefix (ColumnName cn, t) = (ColumnName (addPrx ++ cn), t)
-    makeVarBangTypes :: [(ColumnName, Type)] -> [VarBangType]
+    removePrefix :: (ColumnName, Type, Maybe ColumnName) -> (ColumnName, Type, Maybe ColumnName)
+    removePrefix (ColumnName cn, t, x) = (ColumnName (drop (length rmPrifix) cn), t, x)
+    addPrefix :: (ColumnName, Type, Maybe ColumnName) -> (ColumnName, Type, Maybe ColumnName)
+    addPrefix (ColumnName cn, t, x) = (ColumnName (addPrx ++ cn), t, x)
+    makeVarBangTypes :: [(ColumnName, Type, Maybe ColumnName)] -> [(VarBangType, Maybe ColumnName)]
     makeVarBangTypes l = makeVarBangType <$> l
       where
-        makeVarBangType :: (ColumnName, Type) -> VarBangType
-        makeVarBangType (ColumnName c, t) = (mkName c, Bang NoSourceUnpackedness NoSourceStrictness, t)
-    addFields :: [(ColumnName, Type)] -> Transformation -> [(ColumnName, Type)]
-    addFields l (Transformation {targetField = tf, targetType = TypeName tn}) = (tf, ConT $ mkName tn):l
+        makeVarBangType :: (ColumnName, Type, Maybe ColumnName) -> (VarBangType, Maybe ColumnName)
+        makeVarBangType (ColumnName c, t, x) = ((mkName c, Bang NoSourceUnpackedness NoSourceStrictness, t), x)
+    makeNewFields :: [Transformation] -> [(ColumnName, Type, Maybe ColumnName)]
+    makeNewFields l = (\Transformation {targetField = tf, targetType = TypeName tn} -> (tf, ConT $ mkName tn, Nothing)) <$> l
     removeFields :: [(ColumnName, Type)] -> Transformation -> [(ColumnName, Type)]
     removeFields fieldsAndTypes (Transformation {sourceFields = sf, includeSources = False }) =
       filter (\(c, _)-> not $ c `elem` sf) fieldsAndTypes
