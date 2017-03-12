@@ -846,22 +846,33 @@ makeSecondaryModel source target transformations = do
     defaultT = (ConT $ mkName "Default")
     queryRunnerT = (ConT $ mkName "QueryRunner")
     pgReadT = (ConT $ mkName $ (nameBase source ++ "PGRead"))
+    pgWriteT = (ConT $ mkName $ (nameBase source ++ "PGWrite"))
     targetT = (ConT $ mkName $ targetName)
     cnstT = (ConT $ mkName "Constant")
     instanceHeadQr = AppT (AppT (AppT defaultT queryRunnerT) pgReadT) targetT
-    instanceHeadCon = AppT (AppT (AppT defaultT cnstT) targetT) pgReadT
+    instanceHeadDbm = AppT (ConT $ mkName "DbModel") targetT
   d <- defQr mltr
-  c <- defCons mrtl
+  c <- dbmInstance mrtl mltr
   let 
     qrInstance = InstanceD Nothing [] instanceHeadQr [d]
-    conInstance = InstanceD Nothing [] instanceHeadCon [c]
-  return $ [rec, qrInstance, conInstance]
+    dbMInstance = InstanceD Nothing [] instanceHeadDbm c
+  return $ [rec, qrInstance, dbMInstance]
   where
     defQr :: Dec -> Q Dec
     defQr fd = do
       exp <- [e| rmap mltr def |]
       return $ FunD (mkName "def") [Clause [] (NormalB exp) [fd]]
-    defCons :: Dec -> Q Dec
-    defCons fd = do
-      exp <- [e| lmap mrtl def |]
-      return $ FunD (mkName "def") [Clause [] (NormalB exp) [fd]]
+    dbmInstance :: Dec -> Dec -> Q [Dec]
+    dbmInstance fd fd2 = do
+      expi <- [e| mltr <$> (insertModel conn (mrtl model))|]
+      expu <- [e| mltr <$> (updateModel conn (mrtl model))|]
+      expd <- [e| deleteModel conn (mrtl model)|]
+      let
+        pattern = [VarP $ mkName "conn", VarP $ mkName "model"]
+        iFun = FunD (mkName "insertModel") [Clause pattern (NormalB expi) [fd, fd2]]
+        uFun = FunD (mkName "updateModel") [Clause pattern (NormalB expu) [fd, fd2]]
+        dFun = FunD (mkName "deleteModel") [Clause pattern (NormalB expd) [fd, fd2]]
+      return [iFun, uFun, dFun]
+
+
+
