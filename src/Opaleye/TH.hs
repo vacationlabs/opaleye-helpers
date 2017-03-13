@@ -11,6 +11,7 @@ module Opaleye.TH (
     , TypeName(..)
     , Options(..)
     , TableOptions(..)
+    , module Opaleye.TH.Data
     )
 where 
 
