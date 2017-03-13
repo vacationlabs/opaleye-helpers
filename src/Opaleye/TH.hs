@@ -358,56 +358,6 @@ makeLensesForTable t r = do
         extractClassName :: Dec -> Maybe String
         extractClassName (ClassD _ name _ _ _) = Just $ nameBase name
         extractClassName _ = Nothing
-    makeLenses' :: TypeName -> [String] -> Bool -> EnvM [Dec]
-    makeLenses' modelname protected makeProtected = do
-      (_, _, clg) <- get
-      decs <- lift $ do 
-        let modelTypeName = mkName $ show $ makePolyName modelname
-        case makeProtected of
-          True -> makeProtectedLenses modelTypeName clg 
-          False -> makeNormalLenses modelTypeName clg
-      return decs
-      where
-        makeProtectedLenses :: Name -> LensClassGenerated -> Q [Dec]
-        makeProtectedLenses modelTypeName clg = do
-          let
-            -- The following code extracts list of generated
-            -- classes from the state and only generate classes
-            -- if they are not on that list.
-            lr0 = abbreviatedFields & generateUpdateableOptics .~ False
-            lr1 = lr0 & lensField .~ (protectedFieldNamer clg True)
-            lr2 = lr0 & lensField .~ (protectedFieldNamer clg False)
-            lr3 = (lr2 & createClass .~ False )
-            in do
-              decs1 <- makeLensesWith lr1 modelTypeName
-              decs2 <- makeLensesWith lr3 modelTypeName
-              return $ decs1 ++ decs2
-        makeNormalLenses :: Name -> LensClassGenerated -> Q [Dec]
-        makeNormalLenses modelTypeName clg = do
-          let
-            lr1 = abbreviatedFields & lensField .~ (normalFieldNamer clg True)
-            lr2 = abbreviatedFields & lensField .~ (normalFieldNamer clg False)
-            lr3 = (lr2 & createClass .~ False )
-            in do
-              decs1 <- makeLensesWith lr1 modelTypeName
-              decs2 <- makeLensesWith lr3 modelTypeName
-              return $ decs1 ++ decs2
-        protectedFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
-        protectedFieldNamer clgn eec x y fname = let
-          sFname = "Has" ++ (ucFirst $ drop ((length $ show $ r) + 1) $ nameBase fname)
-          prted = elem sFname protected
-          in if eec
-             then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
-             else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
-        normalFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
-        normalFieldNamer clgn eec x y fname = let
-          sFname = "Has" ++ (ucFirst $ drop ((length $ show r) + 1) $ nameBase fname)
-          prted = (Prelude.not $ elem (nameBase fname) protected)
-          in if eec
-             then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
-             else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
-        makeLenseName :: String -> String
-        makeLenseName (x:xs) = lcFirst $ drop (length $ show r) xs
         
 lcFirst :: String -> String
 lcFirst (x:xs) = (toLower x):xs
@@ -856,8 +806,15 @@ makeSecondaryModel source target transformations = do
   let 
     qrInstance = InstanceD Nothing [] instanceHeadQr [d]
     dbMInstance = InstanceD Nothing [] instanceHeadDbm c
-  return $ [rec, qrInstance, dbMInstance]
+  lenses <- makeLenses'' (TypeName $ nameBase source) (RecordSpecDec (return [rec])) [] False []
+  return $ [rec, qrInstance, dbMInstance] ++ (filterRecordDecs lenses)
   where
+    filterRecordDecs :: [Dec] -> [Dec]
+    filterRecordDecs decs = filter (Prelude.not.isRecordDec) decs
+      where
+        isRecordDec :: Dec -> Bool
+        isRecordDec (DataD _ _ _ _ _ _) = True
+        isRecordDec _ = False
     defQr :: Dec -> Q Dec
     defQr fd = do
       exp <- [e| rmap mltr def |]
@@ -874,5 +831,59 @@ makeSecondaryModel source target transformations = do
         dFun = FunD (mkName "deleteModel") [Clause pattern (NormalB expd) [fd, fd2]]
       return [iFun, uFun, dFun]
 
+makeLenses'':: TypeName -> RecordSpec -> [String] -> Bool -> LensClassGenerated -> Q [Dec]
+makeLenses'' modelname recordSpec protected makeProtected clg  = do
+  case makeProtected of
+    True -> makeProtectedLenses recordSpec clg 
+    False -> makeNormalLenses recordSpec clg
+  where
+    makeProtectedLenses :: RecordSpec -> LensClassGenerated -> Q [Dec]
+    makeProtectedLenses recordSpec clg = do
+      let
+        -- The following code extracts list of generated
+        -- classes from the state and only generate classes
+        -- if they are not on that list.
+        lr0 = abbreviatedFields & generateUpdateableOptics .~ False
+        lr1 = lr0 & lensField .~ (protectedFieldNamer clg True)
+        lr2 = lr0 & lensField .~ (protectedFieldNamer clg False)
+        lr3 = (lr2 & createClass .~ False )
+        in do
+          decs1 <- makeLensesWith' lr1 recordSpec
+          decs2 <- makeLensesWith' lr3 recordSpec
+          return $ decs1 ++ decs2
+    makeNormalLenses :: RecordSpec -> LensClassGenerated -> Q [Dec]
+    makeNormalLenses recordSpec clg = do
+      let
+        lr1 = abbreviatedFields & lensField .~ (normalFieldNamer clg True)
+        lr2 = abbreviatedFields & lensField .~ (normalFieldNamer clg False)
+        lr3 = (lr2 & createClass .~ False )
+        in do
+          decs1 <- makeLensesWith' lr1 recordSpec
+          decs2 <- makeLensesWith' lr3 recordSpec
+          return $ decs1 ++ decs2
+    protectedFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
+    protectedFieldNamer clgn eec x y fname = let
+      sFname = "Has" ++ (ucFirst $ drop ((length $ show $ modelname) + 1) $ nameBase fname)
+      prted = elem sFname protected
+      in if eec
+         then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
+         else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
+    normalFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
+    normalFieldNamer clgn eec x y fname = let
+      sFname = "Has" ++ (ucFirst $ drop ((length $ show modelname) + 1) $ nameBase fname)
+      prted = (Prelude.not $ elem (nameBase fname) protected)
+      in if eec
+         then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
+         else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
+    makeLenseName :: String -> String
+    makeLenseName (x:xs) = lcFirst $ drop (length $ show modelname) xs
+    makeLensesWith' :: LensRules -> RecordSpec -> Q [Dec]
+    makeLensesWith' lr rs = case rs of
+      RecordSpecName n -> makeLensesWith lr n
+      RecordSpecDec qd -> declareLensesWith lr qd
 
-
+makeLenses' :: TypeName -> [String] -> Bool -> EnvM [Dec]
+makeLenses' modelName protected makeProtected = do
+  (_, _, clg) <- get
+  let modelTypeName = mkName $ show $ makePolyName modelName
+  lift $ makeLenses'' modelName (RecordSpecName modelTypeName) protected makeProtected clg
