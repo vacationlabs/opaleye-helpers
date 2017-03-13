@@ -46,6 +46,7 @@ import Control.Lens
 
 import Opaleye.TH.Data
 import qualified Opaleye.TH.Transformations as TR
+import Debug.Trace
 
 makePolyName :: TypeName -> TypeName
 makePolyName (TypeName modelName) = TypeName $ modelName ++ "Poly"

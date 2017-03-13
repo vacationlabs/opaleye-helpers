@@ -59,7 +59,7 @@ transform name targetName transformation = do
             indexedFieldNames :: [(ColumnName, Int)]
             indexedFieldNames = zip ((\(a, _, _) -> ColumnName $ nameBase a) <$> newFields) [1..]
             pattern = AsP (mkName "x") $ ConP tConName (fmap (\(_, a) -> VarP $ mkName ("a" ++ (show a))) $ indexedFieldNames)
-            exp = traceShow indexTuplePatterns $ foldl AppE (ConE conName) (mkExp <$> rightFields)
+            exp = foldl AppE (ConE conName) (mkExp <$> rightFields)
               where
                 indexTuplePatterns = foldl indexTuplePattern [] transformations
                 indexTuplePattern :: [(ColumnName, String)] -> Transformation -> [(ColumnName, String)]
