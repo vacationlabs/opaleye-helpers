@@ -85,9 +85,13 @@ getDbinfo connInfo options = runIO $ do
   where
   overrideNullables :: TableInfo -> TableInfo
   overrideNullables (tn, cis) = case nullIgnored of
-    Just ni -> (tn, fixNullable ni <$> cis)
+    Just ni -> if (and $ isPresent <$> ni) then (tn, fixNullable ni <$> cis) else error "Column for nullable override not found"
     Nothing -> (tn, cis)
     where
+      isPresent :: ColumnName -> Bool
+      isPresent cn = if cn `elem` availableColumns then True else error $ "Column for nullable override " ++ (show cn) ++ " not found in table " ++ (show tn) ++ "."
+      availableColumns :: [ColumnName]
+      availableColumns = columnName <$> cis
       fixNullable :: [ColumnName] -> ColumnInfo -> ColumnInfo
       fixNullable ni ci = if (columnName ci) `elem` ni then ci { columnNullable = False } else ci
       nullIgnored :: Maybe [ColumnName]
