@@ -129,7 +129,7 @@ makeTransformationFunction
         validate = and $ isPresent <$> sourceFields
           where
             isPresent :: ColumnName -> Bool
-            isPresent cn = isJust $ lookup cn fieldsAndTypes
+            isPresent cn = if isNothing $ lookup cn fieldsAndTypes then error $ "One of the src fields, " ++ (show cn) ++ " was not found. Available fields are " ++ (show fieldsAndTypes) else True
         (pat, expl) = if validate then (foldl makePatternAndExp ([], []) $ zip fieldsAndTypes [1..]) else (error $ "One of the source fields in " ++ (show sourceFields) ++ " could not be found")
         fullExp = foldl AppE (VarE sourcesToTarget) $ sortAndExtractExp expl
           where
@@ -180,7 +180,11 @@ makeRecordFields fieldsAndTypes rmPrifix addPrx transformations = let
     makeNewFields l = (\Transformation {targetField = tf, targetType = TypeName tn} -> (tf, ConT $ mkName tn, Nothing)) <$> l
     removeFields :: [(ColumnName, Type)] -> Transformation -> [(ColumnName, Type)]
     removeFields fieldsAndTypes (Transformation {sourceFields = sf, includeSources = False }) =
-      filter (\(c, _)-> not $ c `elem` sf) fieldsAndTypes
+      if (and $ validate <$> sf) then filter (\(c, _)-> not $ c `elem` sf) fieldsAndTypes else error $ "One of the source fields in " ++ show sf ++ " was not found"
+      where
+        validate src_f = if isNothing $ lookup src_f fieldsAndTypes 
+                           then error $ "Source field " ++ (show src_f) ++ " was not found. Available fields are, " ++ (show $ fst <$> fieldsAndTypes) 
+                           else True
     removeFields fieldsAndTypes _  = fieldsAndTypes
 
 getFieldNamesAndTypes :: Dec -> [Type] -> [(ColumnName, Type)]
