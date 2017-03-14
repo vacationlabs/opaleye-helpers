@@ -7,6 +7,7 @@ import Language.Haskell.TH
 
 newtype TableName = TableName String deriving (Eq)
 newtype ColumnName = ColumnName String deriving (Eq)
+newtype FieldName = FieldName String deriving (Eq)
 newtype TypeName = TypeName String deriving (Eq)
 
 instance Show TableName where
@@ -15,10 +16,13 @@ instance Show TableName where
 instance Show ColumnName where
   show (ColumnName x) = x
 
+instance Show FieldName where
+  show (FieldName x) = x
+
 instance Show TypeName where
   show (TypeName x) = x
 
-data Options = Options { tableOptions :: [(TableName, TableOptions)] }
+newtype Options = Options { tableOptions :: [(TableName, TableOptions)] }
 
 data TableOptions = TableOptions {
   modelName :: TypeName
@@ -29,9 +33,9 @@ data TableOptions = TableOptions {
 }
 
 data Transformation = Transformation {
-  targetField :: ColumnName,
+  targetField :: FieldName,
   targetType :: TypeName,
-  sourceFields :: [ColumnName],
+  sourceFields :: [FieldName],
   sourcesToTarget :: Name,
   targetTosources :: Name,
   includeSources :: Bool,

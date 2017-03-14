@@ -818,13 +818,13 @@ makeSecondaryModel source target transformations options = do
   let 
     qrInstance = InstanceD Nothing [] instanceHeadQr [d]
     dbMInstance = InstanceD Nothing [] instanceHeadDbm c
-    cnToString (ColumnName cn) = cn
-    protectedFields = cnToString <$> (getProtected transformations) ++ (getProtectedFieldsFor options (TypeName $ nameBase source))
+    cnToString cn = makeFieldName target cn
+    protectedFields = (show <$> (getProtected transformations)) ++ (cnToString <$> (getProtectedFieldsFor options (TypeName $ nameBase source)))
   protectedLenses <- makeLenses'' (TypeName $ nameBase source) (RecordSpecDec (return [rec])) protectedFields True []
   normalLenses <- makeLenses'' (TypeName $ nameBase source) (RecordSpecDec (return [rec])) protectedFields False []
   return $ [rec, qrInstance, dbMInstance] ++ (filterRecordDecs (protectedLenses ++ normalLenses))
   where
-    getProtected :: [Transformation] -> [ColumnName]
+    getProtected :: [Transformation] -> [FieldName]
     getProtected transformations = targetField <$> (filter isProtected transformations)
     filterRecordDecs :: [Dec] -> [Dec]
     filterRecordDecs decs = filter (Prelude.not.isRecordDec) decs
