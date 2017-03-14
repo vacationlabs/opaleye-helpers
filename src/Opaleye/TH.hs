@@ -790,8 +790,14 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   return $ decs ++ rationalIns
   ) env
 
-makeSecondaryModel :: Name -> TypeName -> [Transformation] -> Q [Dec]
-makeSecondaryModel source target transformations = do
+getProtectedFieldsFor :: Options -> TypeName -> [ColumnName]
+getProtectedFieldsFor (Options options) typename = let
+  mktuple x = (modelName x, protectedFields x)
+  pl = (mktuple.snd) <$> options
+  in fromMaybe [] (lookup typename pl)
+
+makeSecondaryModel :: Name -> TypeName -> [Transformation] -> Options -> Q [Dec]
+makeSecondaryModel source target transformations options = do
   [rec, mltr, mrtl] <- TR.transform source target transformations
   let 
     TypeName targetName  = target
@@ -808,9 +814,14 @@ makeSecondaryModel source target transformations = do
   let 
     qrInstance = InstanceD Nothing [] instanceHeadQr [d]
     dbMInstance = InstanceD Nothing [] instanceHeadDbm c
-  lenses <- makeLenses'' (TypeName $ nameBase source) (RecordSpecDec (return [rec])) [] False []
-  return $ [rec, qrInstance, dbMInstance] ++ (filterRecordDecs lenses)
+    cnToString (ColumnName cn) = cn
+    protectedFields = cnToString <$> (getProtected transformations) ++ (getProtectedFieldsFor options (TypeName $ nameBase source))
+  protectedLenses <- makeLenses'' (TypeName $ nameBase source) (RecordSpecDec (return [rec])) protectedFields True []
+  normalLenses <- makeLenses'' (TypeName $ nameBase source) (RecordSpecDec (return [rec])) protectedFields False []
+  return $ [rec, qrInstance, dbMInstance] ++ (filterRecordDecs (protectedLenses ++ normalLenses))
   where
+    getProtected :: [Transformation] -> [ColumnName]
+    getProtected transformations = targetField <$> (filter isProtected transformations)
     filterRecordDecs :: [Dec] -> [Dec]
     filterRecordDecs decs = filter (Prelude.not.isRecordDec) decs
       where

@@ -122,7 +122,7 @@ makeTransformationFunction
   fieldsAndTypes
   newFields
   targetName 
-  (Transformation targetField@(ColumnName targetFieldName) targetType sourceFields sourcesToTarget targetTosources _)  = (targetField, makeLtR, makeRtL)
+  (Transformation targetField@(ColumnName targetFieldName) targetType sourceFields sourcesToTarget targetTosources _ _)  = (targetField, makeLtR, makeRtL)
     where
       makeLtR :: Dec
       makeLtR = let

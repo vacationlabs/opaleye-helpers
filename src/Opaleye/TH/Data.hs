@@ -34,7 +34,8 @@ data Transformation = Transformation {
   sourceFields :: [ColumnName],
   sourcesToTarget :: Name,
   targetTosources :: Name,
-  includeSources :: Bool
+  includeSources :: Bool,
+  isProtected :: Bool
 }
 
 data SecondaryModel = SecondaryModel {
