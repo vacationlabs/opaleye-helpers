@@ -30,6 +30,7 @@ data TableOptions = TableOptions {
   , protectedFields :: [ColumnName]
   , autoDeriveInstances :: [TypeName] 
   , ignoreNullables :: [ColumnName]
+  , includeColumns :: Maybe [ColumnName]
 }
 
 data Transformation = Transformation {

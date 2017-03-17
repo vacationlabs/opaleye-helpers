@@ -81,7 +81,7 @@ getFieldInfosForTable dbInfo tname = fromJust $ lookup tname dbInfo
 getDbinfo :: ConnectInfo -> Options -> Q DbInfo
 getDbinfo connInfo options = runIO $ do
   conn <- connect connInfo
-  Prelude.mapM (fmap overrideNullables . getColumns conn) (fst <$> tableOptions options)
+  Prelude.mapM (fmap overrideNullables . getColumns conn options) (fst <$> tableOptions options)
   where
   overrideNullables :: TableInfo -> TableInfo
   overrideNullables (tn, cis) = case nullIgnored of
@@ -89,7 +89,7 @@ getDbinfo connInfo options = runIO $ do
     Nothing -> (tn, cis)
     where
       isPresent :: ColumnName -> Bool
-      isPresent cn = if cn `elem` availableColumns then True else error $ "Column for nullable override " ++ (show cn) ++ " not found in table " ++ (show tn) ++ "."
+      isPresent cn = if cn `elem` availableColumns then True else error $ "Column for nullable override " ++ (show cn) ++ " not found in table " ++ (show tn) ++ ". Available columns are, " ++ (show availableColumns)
       availableColumns :: [ColumnName]
       availableColumns = columnName <$> cis
       fixNullable :: [ColumnName] -> ColumnInfo -> ColumnInfo
@@ -97,8 +97,9 @@ getDbinfo connInfo options = runIO $ do
       nullIgnored :: Maybe [ColumnName]
       nullIgnored = ignoreNullables <$> lookup tn (tableOptions options)
 
-getColumns :: Connection -> TableName -> IO TableInfo
-getColumns conn (TableName tname) = do
+getColumns :: Connection -> Options -> TableName -> IO TableInfo
+getColumns conn options tn@(TableName tname) = do
+  let tOptions = fromJust $ lookup tn $ tableOptions options
   field_rows <- query conn "SELECT \
       \ c.column_name, c.udt_name, c.column_default, c.is_nullable, (array_agg(tc.constraint_type::text) @> ARRAY ['PRIMARY KEY']) as is_primary\
       \ FROM\
@@ -114,8 +115,20 @@ getColumns conn (TableName tname) = do
       \   tc.table_name = c.table_name and\
       \   tc.constraint_name = ccu.constraint_name\
       \ where c.table_name = ? group by c.column_name,c.udt_name, c.column_default, c.is_nullable" (Only tname) :: IO [(String, String, Maybe String, String, Bool)]
-  return $ (fmap makeColumnInfo) <$> (TableName tname, field_rows)
+  return $ (TableName tname, filterColumns tOptions $ makeColumnInfo <$> field_rows)
   where
+    filterColumns :: TableOptions -> [ColumnInfo] -> [ColumnInfo]
+    filterColumns to cis = case (includeColumns to) of
+      Nothing -> cis
+      Just xs -> if validate xs then filter (\ci -> (columnName ci) `elem` xs) cis else error $ "Couldnot validate include column list"
+      where
+        tcns :: [ColumnName]
+        tcns = columnName <$> cis
+        validate :: [ColumnName] -> Bool
+        validate cns = and $ isPresent <$> cns
+          where
+            isPresent :: ColumnName -> Bool
+            isPresent cn = cn `elem` tcns
     makeColumnInfo :: (String, String, Maybe String, String, Bool) -> ColumnInfo
     makeColumnInfo (name, ctype, hasDefault, isNullable, isPrimary) = ColumnInfo (TableName tname) (ColumnName name) ctype (isJust hasDefault) (isNullable == "YES") isPrimary
 
