@@ -385,9 +385,12 @@ ucFirst (x:xs) = (toUpper x):xs
 
 makeOpaleyeTable :: TableName -> TypeName -> EnvM [Dec]
 makeOpaleyeTable t r = do
-  (dbInfo, _, _) <- get
+  (dbInfo, options, _) <- get
   let fieldInfos = getFieldInfosForTable dbInfo t
-  functions <- makeModelInstance fieldInfos
+  let tableOptions = getTableOptions t options
+  functions <- case includeColumns tableOptions of
+    Just _ -> return []
+    Nothing -> makeModelInstance fieldInfos
   lift $ do
     Just adapterFunc <- lookupValueName $ makeAdapterName r
     Just constructor <- lookupValueName $ show r
@@ -813,6 +816,12 @@ getProtectedFieldsFor (Options options) typename = let
   pl = (mktuple.snd) <$> options
   in fromMaybe [] (lookup typename pl)
 
+getIncludedFieldsFor :: Options -> TypeName -> Maybe [ColumnName]
+getIncludedFieldsFor (Options options) typename = let
+  mktuple x = (modelName x, includeColumns x)
+  pl = (mktuple.snd) <$> options
+  in fromMaybe Nothing (lookup typename pl)
+
 makeSecondaryModel :: Name -> TypeName -> [Transformation] -> Options -> Q [Dec]
 makeSecondaryModel source target transformations options = do
   [rec, mltr, mrtl] <- TR.transform source target transformations
@@ -827,16 +836,19 @@ makeSecondaryModel source target transformations options = do
     instanceHeadQr = AppT (AppT (AppT defaultT queryRunnerT) pgReadT) targetT
     instanceHeadDbm = AppT (ConT $ mkName "DbModel") targetT
   d <- defQr mltr
-  c <- dbmInstance mrtl mltr
   let 
     qrInstance = InstanceD Nothing [] instanceHeadQr [d]
-    dbMInstance = InstanceD Nothing [] instanceHeadDbm c
     cnToString cn = makeFieldName target cn
     protectedFields = (show <$> (getProtected transformations)) ++ (cnToString <$> (getProtectedFieldsFor options (TypeName $ nameBase source)))
+  dbMInstance <- if isSourceFull then do
+    c <- dbmInstance mrtl mltr
+    return [InstanceD Nothing [] instanceHeadDbm c] else return []
   protectedLenses <- makeLenses'' (TypeName $ nameBase source) (RecordSpecDec (return [rec])) protectedFields True []
   normalLenses <- makeLenses'' (TypeName $ nameBase source) (RecordSpecDec (return [rec])) protectedFields False []
-  return $ [rec, qrInstance, dbMInstance] ++ (filterRecordDecs (protectedLenses ++ normalLenses))
+  return $ [rec, qrInstance] ++ dbMInstance ++ (filterRecordDecs (protectedLenses ++ normalLenses))
   where
+    isSourceFull :: Bool
+    isSourceFull = isNothing $ getIncludedFieldsFor options (TypeName $ nameBase source)
     getProtected :: [Transformation] -> [FieldName]
     getProtected transformations = targetField <$> (filter isProtected transformations)
     filterRecordDecs :: [Dec] -> [Dec]
