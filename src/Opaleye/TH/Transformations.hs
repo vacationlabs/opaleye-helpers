@@ -179,13 +179,13 @@ makeRecordFields fieldsAndTypes rmPrifix addPrx transformations = let
     makeNewFields :: [Transformation] -> [(FieldName, Type, Maybe FieldName)]
     makeNewFields l = (\Transformation {targetField = tf, targetType = TypeName tn} -> (tf, ConT $ mkName tn, Nothing)) <$> l
     removeFields :: [(FieldName, Type)] -> Transformation -> [(FieldName, Type)]
-    removeFields fieldsAndTypes (Transformation {sourceFields = sf, includeSources = False }) =
-      if (and $ validate <$> sf) then filter (\(c, _)-> not $ c `elem` sf) fieldsAndTypes else error $ "One of the source fields in " ++ show sf ++ " was not found"
+    removeFields f (Transformation {sourceFields = sf, includeSources = False }) =
+      if (and $ validate <$> sf) then filter (\(c, _)-> not $ c `elem` sf) f else error $ "One of the source fields in " ++ show sf ++ " was not found"
       where
         validate src_f = if isNothing $ lookup src_f fieldsAndTypes 
                            then error $ "Source field " ++ (show src_f) ++ " was not found. Available fields are, " ++ (show $ fst <$> fieldsAndTypes) 
                            else True
-    removeFields fieldsAndTypes _  = fieldsAndTypes
+    removeFields f _  = f
 
 getFieldNamesAndTypes :: Dec -> [Type] -> [(FieldName, Type)]
 getFieldNamesAndTypes cons args = case cons of
