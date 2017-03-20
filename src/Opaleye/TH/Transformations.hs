@@ -35,7 +35,7 @@ transform name targetName transformation = do
             fieldNameAndTypes = getFieldNamesAndTypes datad typeargs
             indexedFieldNames :: [(FieldName, Int)]
             indexedFieldNames = zip (fst <$> fieldNameAndTypes) [1..]
-            ptrn = AsP (mkName "x") $ ConP conName (fmap (\(_, a) -> VarP $ mkName ("a" ++ (show a))) $ indexedFieldNames)
+            ptrn = AsP (mkName "x") $ ConP conName (fmap (\(_, a) -> VarP $ mkName ("b" ++ (show a))) $ indexedFieldNames)
             exp' = foldl AppE (ConE tConName) (mkExp <$> newFields)
               where
                 mkExp :: (Name, Bang, Type) -> Exp
@@ -44,7 +44,7 @@ transform name targetName transformation = do
                   Just _ -> error "Unexpected varbangtype"
                   Nothing -> case lookup name' newToOld of
                     Just (Just colname) -> case lookup colname indexedFieldNames of
-                      Just index -> VarE $ mkName ("a" ++ show index)
+                      Just index -> VarE $ mkName ("b" ++ show index)
                       _ -> error "Cannot find old field name for transformed record field"
                     _ -> error "Cannot find old field name for transformed record field"
       mlTr _ _ _ _ _ = error "Unexpected patterns" 
@@ -60,7 +60,7 @@ transform name targetName transformation = do
           where
             indexedFieldNames :: [(FieldName, Int)]
             indexedFieldNames = zip ((\(a, _, _) -> FieldName $ nameBase a) <$> newFields) [1..]
-            ptrn = AsP (mkName "x") $ ConP tConName (fmap (\(_, a) -> VarP $ mkName ("a" ++ (show a))) $ indexedFieldNames)
+            ptrn = AsP (mkName "x") $ ConP tConName (fmap (\(_, a) -> VarP $ mkName ("b" ++ (show a))) $ indexedFieldNames)
             exp' = foldl AppE (ConE conName) (mkExp <$> rightFields)
               where
                 indexTuplePatterns = foldl indexTuplePattern [] transformations
@@ -73,11 +73,11 @@ transform name targetName transformation = do
                 mkExp :: (Name, Bang, Type) -> Exp
                 mkExp (nameBase -> name', _, _) = case lookup (Just $ FieldName $ name') oldToNew of
                   Just (nameBase -> newName') -> case lookup (FieldName $ newName') indexedFieldNames of
-                    Just index -> VarE $ mkName ("a" ++ show index)
-                    _ -> error "error"
-                  Nothing -> case lookup (FieldName $ nameBase name) indexTuplePatterns of
+                    Just index -> VarE $ mkName ("b" ++ show index)
+                    _ -> error $ "Failed to make expression for field " ++ (show name') ++ (show indexedFieldNames)
+                  Nothing -> case lookup (FieldName $ name') indexTuplePatterns of
                     Just argName -> VarE $ mkName argName
-                    _ -> error "error"
+                    _ -> error $ "Failed to make expression for field " ++ (show name') ++ (show indexTuplePatterns)
             allFunctions = (fmap (\(_, (_, b)) -> b) l) ++ (makeExtractionFunctions transformations)
             makeExtractionFunctions :: [Transformation] -> [Dec]
             makeExtractionFunctions xs = (makeTransformationFunction' "asd") <$> xs
@@ -147,7 +147,7 @@ makeTransformationFunction
         in FunD (mkName (targetFieldName ++ "LtR")) [Clause [ptrn] (NormalB fullExp) []]
           where
           makeVarName :: Int -> Name
-          makeVarName index = mkName ("a" ++ show index)
+          makeVarName index = mkName ("c" ++ show index)
           makePatternAndExp :: ([Pat], [(FieldName, Exp)]) -> ((FieldName, Type), Int) -> ([Pat], [(FieldName, Exp)])
           makePatternAndExp (pl, exp')((cn, _), index) = let
             tr = (cn `elem` sourceFields)
@@ -157,10 +157,10 @@ makeTransformationFunction
       makeRtL :: Dec
       makeRtL = let
         ptrn = foldl makePattern [] newFields 
-        in FunD (mkName (targetFieldName ++ "RtL")) [Clause [ConP targetName (reverse ptrn)] (NormalB $ AppE (VarE targetTosources) (VarE $ mkName "x")) []]
+        in FunD (mkName (targetFieldName ++ "RtL")) [Clause [ConP targetName (reverse ptrn)] (NormalB $ AppE (VarE targetTosources) (VarE $ mkName "y")) []]
           where
           makePattern :: [Pat] -> (Name, Bang, Type) -> [Pat]
-          makePattern pl (name, _, _) = let p = if (targetFieldName == (nameBase name)) then (VarP $ mkName "x") else WildP in (p:pl)
+          makePattern pl (name, _, _) = let p = if (targetFieldName == (nameBase name)) then (VarP $ mkName "y") else WildP in (p:pl)
     
 makeRecordFields :: [(FieldName, Type)] -> String -> String -> [Transformation] -> [(VarBangType, Maybe FieldName)]
 makeRecordFields fieldsAndTypes rmPrifix addPrx transformations = let
