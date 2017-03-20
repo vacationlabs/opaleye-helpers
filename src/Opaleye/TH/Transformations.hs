@@ -24,6 +24,18 @@ transform name targetName transformation = do
           return [r, mlTr newToOld r datad recordArgs rs, mrTl transformation ((\(a', b)-> (b,a')) <$> newToOld) r datad rs]
     _ -> error "Require a type synonym"
     where
+      replaceWithWildCards :: [Pat] -> Exp -> [Pat]
+      replaceWithWildCards ptrns exp' = replaceWithWildCard <$> ptrns
+        where
+          replaceWithWildCard :: Pat -> Pat
+          replaceWithWildCard p@(VarP (nameBase -> pname)) = if pname `elem` varsInExp then p else WildP
+          varsInExp :: [String]
+          varsInExp = nameBase <$> varsInExp' exp'
+            where
+              varsInExp' (AppE a (VarE b)) = b:(varsInExp' a)
+              varsInExp' (AppE a b) = varsInExp' a ++ varsInExp' b
+              varsInExp' (VarE a) = [a]
+              varsInExp' (ConE _) = []
       mlTr :: [(Name, Maybe FieldName)] -> Dec -> Dec -> [Type] -> [(Name, (Dec, Dec))] -> Dec
       mlTr 
         newToOld
@@ -35,7 +47,11 @@ transform name targetName transformation = do
             fieldNameAndTypes = getFieldNamesAndTypes datad typeargs
             indexedFieldNames :: [(FieldName, Int)]
             indexedFieldNames = zip (fst <$> fieldNameAndTypes) [1..]
-            ptrn = AsP (mkName "x") $ ConP conName (fmap (\(_, a) -> VarP $ mkName ("b" ++ (show a))) $ indexedFieldNames)
+            ptrn :: Pat
+            ptrn = AsP (mkName "x") $ ConP conName $ replaceWithWildCards ptrnComps exp'
+            ptrnComps :: [Pat]
+            ptrnComps = (fmap (\(_, a) -> VarP $ mkName ("b" ++ (show a))) $ indexedFieldNames)
+            exp' :: Exp
             exp' = foldl AppE (ConE tConName) (mkExp <$> newFields)
               where
                 mkExp :: (Name, Bang, Type) -> Exp
@@ -60,7 +76,9 @@ transform name targetName transformation = do
           where
             indexedFieldNames :: [(FieldName, Int)]
             indexedFieldNames = zip ((\(a, _, _) -> FieldName $ nameBase a) <$> newFields) [1..]
-            ptrn = AsP (mkName "x") $ ConP tConName (fmap (\(_, a) -> VarP $ mkName ("b" ++ (show a))) $ indexedFieldNames)
+            ptrn = AsP (mkName "x") $ ConP tConName (replaceWithWildCards ptrnComps exp')
+            ptrnComps :: [Pat]
+            ptrnComps = (fmap (\(_, a) -> VarP $ mkName ("b" ++ (show a))) $ indexedFieldNames)
             exp' = foldl AppE (ConE conName) (mkExp <$> rightFields)
               where
                 indexTuplePatterns = foldl indexTuplePattern [] transformations
