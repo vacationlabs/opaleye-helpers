@@ -29,13 +29,13 @@ transform name targetName transformation = do
         newToOld
         (DataD [] _ [] Nothing [RecC tConName newFields] _)
         (datad@(DataD [] _ _ _ [RecC conName _] _))
-        typeargs l = FunD (mkName "mltr") [Clause  [pattern] (NormalB exp') allFunctions]
+        typeargs l = FunD (mkName "mltr") [Clause  [ptrn] (NormalB exp') allFunctions]
           where
             allFunctions = fmap (\(_, (a, _)) -> a) l
             fieldNameAndTypes = getFieldNamesAndTypes datad typeargs
             indexedFieldNames :: [(FieldName, Int)]
             indexedFieldNames = zip (fst <$> fieldNameAndTypes) [1..]
-            pattern = AsP (mkName "x") $ ConP conName (fmap (\(_, a) -> VarP $ mkName ("a" ++ (show a))) $ indexedFieldNames)
+            ptrn = AsP (mkName "x") $ ConP conName (fmap (\(_, a) -> VarP $ mkName ("a" ++ (show a))) $ indexedFieldNames)
             exp' = foldl AppE (ConE tConName) (mkExp <$> newFields)
               where
                 mkExp :: (Name, Bang, Type) -> Exp
@@ -56,11 +56,11 @@ transform name targetName transformation = do
         (DataD [] _ _ _ [RecC conName rightFields] _)
         l
         =
-        FunD (mkName "mrtl") [Clause  [pattern] (NormalB exp') allFunctions]
+        FunD (mkName "mrtl") [Clause  [ptrn] (NormalB exp') allFunctions]
           where
             indexedFieldNames :: [(FieldName, Int)]
             indexedFieldNames = zip ((\(a, _, _) -> FieldName $ nameBase a) <$> newFields) [1..]
-            pattern = AsP (mkName "x") $ ConP tConName (fmap (\(_, a) -> VarP $ mkName ("a" ++ (show a))) $ indexedFieldNames)
+            ptrn = AsP (mkName "x") $ ConP tConName (fmap (\(_, a) -> VarP $ mkName ("a" ++ (show a))) $ indexedFieldNames)
             exp' = foldl AppE (ConE conName) (mkExp <$> rightFields)
               where
                 indexTuplePatterns = foldl indexTuplePattern [] transformations
@@ -84,10 +84,10 @@ transform name targetName transformation = do
               where
                 makeTransformationFunction' :: String -> Transformation -> Dec
                 makeTransformationFunction' _ (Transformation { targetField = FieldName tf, sourceFields = sf })
-                  = ValD pattern' (NormalB $ AppE (VarE mkFn) (VarE $ mkName "x")) []
+                  = ValD ptrn' (NormalB $ AppE (VarE mkFn) (VarE $ mkName "x")) []
                   where
                     mkTupeCon = "(" ++ (replicate (length sf -1) ',') ++ ")"
-                    pattern' = ConP (mkName $ mkTupeCon) (((VarP).mkName) <$> tfCounted)
+                    ptrn' = ConP (mkName $ mkTupeCon) (((VarP).mkName) <$> tfCounted)
                     tfCounted = (\(a, b) -> (a ++ (show b))) <$> zip (replicate (length sf) tf) ([1..] :: [Int])
                     mkFn :: Name
                     mkFn = (mkName $ tf ++ "RtL")
@@ -143,8 +143,8 @@ makeTransformationFunction
               expForCol cn = case (lookup cn ls) of
                 Just exp' -> exp'
                 _ -> error "Cannot find exp for column"
-        pattern = ConP sourceName $ reverse pat
-        in FunD (mkName (targetFieldName ++ "LtR")) [Clause [pattern] (NormalB fullExp) []]
+        ptrn = ConP sourceName $ reverse pat
+        in FunD (mkName (targetFieldName ++ "LtR")) [Clause [ptrn] (NormalB fullExp) []]
           where
           makeVarName :: Int -> Name
           makeVarName index = mkName ("a" ++ show index)
@@ -156,8 +156,8 @@ makeTransformationFunction
             in (p:pl, x)
       makeRtL :: Dec
       makeRtL = let
-        pattern = foldl makePattern [] newFields 
-        in FunD (mkName (targetFieldName ++ "RtL")) [Clause [ConP targetName (reverse pattern)] (NormalB $ AppE (VarE targetTosources) (VarE $ mkName "x")) []]
+        ptrn = foldl makePattern [] newFields 
+        in FunD (mkName (targetFieldName ++ "RtL")) [Clause [ConP targetName (reverse ptrn)] (NormalB $ AppE (VarE targetTosources) (VarE $ mkName "x")) []]
           where
           makePattern :: [Pat] -> (Name, Bang, Type) -> [Pat]
           makePattern pl (name, _, _) = let p = if (targetFieldName == (nameBase name)) then (VarP $ mkName "x") else WildP in (p:pl)

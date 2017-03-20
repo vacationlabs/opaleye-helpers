@@ -844,10 +844,10 @@ makeSecondaryModel source target transformations options = do
       expu <- [e| mltr <$> (updateModel conn (mrtl model))|]
       expd <- [e| deleteModel conn (mrtl model)|]
       let
-        pattern = [VarP $ mkName "conn", VarP $ mkName "model"]
-        iFun = FunD (mkName "insertModel") [Clause pattern (NormalB expi) [fd, fd2]]
-        uFun = FunD (mkName "updateModel") [Clause pattern (NormalB expu) [fd, fd2]]
-        dFun = FunD (mkName "deleteModel") [Clause pattern (NormalB expd) [fd, fd2]]
+        ptrn = [VarP $ mkName "conn", VarP $ mkName "model"]
+        iFun = FunD (mkName "insertModel") [Clause ptrn (NormalB expi) [fd, fd2]]
+        uFun = FunD (mkName "updateModel") [Clause ptrn (NormalB expu) [fd, fd2]]
+        dFun = FunD (mkName "deleteModel") [Clause ptrn (NormalB expd) [fd, fd2]]
       return [iFun, uFun, dFun]
 
 makeLenses'':: TypeName -> RecordSpec -> [String] -> Bool -> LensClassGenerated -> Q [Dec]
