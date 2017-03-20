@@ -1,7 +1,5 @@
 module Opaleye.TH.Data where
 
-import Control.Monad.Trans.Class
-import Control.Monad.Trans.Reader
 import Control.Monad.State.Lazy
 import Language.Haskell.TH
 

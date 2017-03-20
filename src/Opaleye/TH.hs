@@ -144,24 +144,24 @@ makePgTypeWithNull ci = do
     hasNullable _ = False
 
 makePgType :: ColumnInfo -> EnvM Type
-makePgType ci@(ColumnInfo  _ _ ct _ isNullable _) = do
+makePgType ci@(ColumnInfo  {..}) = do
   c <- lift $ lookupTypeName "Column"
   case c of
     Nothing -> error "Couldn't find opaleye's 'Column' type in scope. Have you imported Opaleye module?"
-    Just columnName -> do
+    Just opColumn -> do
       Just n <- lift $ lookupTypeName "Nullable"
       x <- lookupNewtypeForField ci
       case x of
         Just pgType -> do
-          return $ makeFinalType columnName n (ConT pgType)
+          return $ makeFinalType opColumn n (ConT pgType)
         Nothing -> do
-          pgType <- getPGColumnType ct
-          return $ makeFinalType columnName n pgType
+          pgType <- getPGColumnType columnType
+          return $ makeFinalType opColumn n pgType
   where
     makeFinalType :: Name -> Name -> Type -> Type
-    makeFinalType columnName nullableName pgType = let 
-                       nn = AppT (ConT columnName) pgType
-                       in if isNullable then (AppT (ConT columnName) (AppT (ConT nullableName) pgType))  else nn 
+    makeFinalType typeName nullableName pgType = let 
+      nn = AppT (ConT typeName) pgType
+      in if columnNullable then (AppT (ConT typeName) (AppT (ConT nullableName) pgType))  else nn 
 
 getPGColumnType :: ColumnType -> EnvM Type
 getPGColumnType ct = lift $ (getType ct) 
