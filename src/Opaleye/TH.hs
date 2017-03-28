@@ -70,9 +70,9 @@ makeHaskellNameWithMaybes (TypeName tn) = TypeName $ tn ++ "MaybeWrapped"
 getFieldInfosForTable :: DbInfo -> TableName -> [ColumnInfo]
 getFieldInfosForTable dbInfo tname = fromJust $ lookup tname dbInfo
 
-getDbinfo :: ConnectInfo -> Options -> Q DbInfo
-getDbinfo connInfo options = runIO $ do
-  conn <- connect connInfo
+getDbinfo :: IO Connection -> Options -> Q DbInfo
+getDbinfo getConnection options = runIO $ do
+  conn <- getConnection
   Prelude.mapM (fmap overrideNullables . getColumns conn options) (fst <$> tableOptions options)
   where
   overrideNullables :: TableInfo -> TableInfo
@@ -309,9 +309,9 @@ makeWriteTypes fieldInfos = do
           then (AppT (ConT maybeName) defaultType)
           else defaultType
 
-makeOpaleyeTables :: (ConnectInfo, Options) -> Q [Dec]
-makeOpaleyeTables (ci, opt) = do
-  dbInfo <- getDbinfo ci opt
+makeOpaleyeTables :: IO Connection -> Options -> Q [Dec]
+makeOpaleyeTables getConn opt = do
+  dbInfo <- getDbinfo getConn opt
   makeOpaleyeTables' (dbInfo, opt, [])
 
 makeOpaleyeTables' :: Env -> Q [Dec]
@@ -454,9 +454,9 @@ makeOpaleyeTable t r = do
 makeAdapterName :: TypeName -> String
 makeAdapterName (TypeName mn) = 'p':mn
 
-makeOpaleyeModels :: (ConnectInfo, Options) -> Q [Dec]
-makeOpaleyeModels (ci, opt) = do
-  dbInfo <-  getDbinfo ci opt
+makeOpaleyeModels :: IO Connection -> Options -> Q [Dec]
+makeOpaleyeModels getconn opt = do
+  dbInfo <-  getDbinfo getconn opt
   makeOpaleyeModels' (dbInfo, opt, [])
 
 makeOpaleyeModels' :: Env -> Q [Dec]
@@ -755,9 +755,9 @@ makeNewtypeInstances = do
 getTableOptions :: TableName -> Options -> TableOptions
 getTableOptions tname options = fromJust $ lookup tname (tableOptions options)
 
-makeAdaptorAndInstances :: (ConnectInfo, Options) -> Q [Dec]
-makeAdaptorAndInstances (ci, opt) = do
-  dbInfo <- getDbinfo ci opt
+makeAdaptorAndInstances :: IO Connection -> Options -> Q [Dec]
+makeAdaptorAndInstances getConnection opt = do
+  dbInfo <- getDbinfo getConnection opt
   makeAdaptorAndInstances' (dbInfo, opt, [])
 
 makeAdaptorAndInstances' :: Env -> Q [Dec]
