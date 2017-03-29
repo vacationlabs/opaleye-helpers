@@ -29,6 +29,7 @@ transform name targetName transformation = do
         where
           replaceWithWildCard :: Pat -> Pat
           replaceWithWildCard p@(VarP (nameBase -> pname)) = if pname `elem` varsInExp then p else WildP
+          replaceWithWildCard _ = error "Unexpected pattern"
           varsInExp :: [String]
           varsInExp = nameBase <$> varsInExp' exp'
             where
@@ -36,6 +37,7 @@ transform name targetName transformation = do
               varsInExp' (AppE a b) = varsInExp' a ++ varsInExp' b
               varsInExp' (VarE a) = [a]
               varsInExp' (ConE _) = []
+              varsInExp' _  = error "Unexpected pattern"
       mlTr :: [(Name, Maybe FieldName)] -> Dec -> Dec -> [Type] -> [(Name, (Dec, Dec))] -> Dec
       mlTr 
         newToOld

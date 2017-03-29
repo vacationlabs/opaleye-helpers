@@ -472,8 +472,11 @@ makeOpaleyeModels' env = fst <$> runStateT (do
 collectNewTypes :: EnvM [(ColumnInfo, TypeName)]
 collectNewTypes = do
   (_, options, _) <- get
-  Data.List.concat <$> mapM getNewTypes (tableOptions options)
+  newtypes <- Data.List.concat <$> mapM getNewTypes (tableOptions options)
+  filterM isNew newtypes
   where
+    isNew :: (ColumnInfo, TypeName) -> EnvM Bool
+    isNew (_, TypeName n) = lift $ isNothing <$> lookupTypeName n
     getNewTypes :: (TableName, TableOptions) -> EnvM [(ColumnInfo, TypeName)]
     getNewTypes (tbName, tbOptions) = do
       (dbInfo, _, _) <- get
