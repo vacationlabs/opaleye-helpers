@@ -32,7 +32,7 @@ import Opaleye
 import Opaleye.Internal.PGTypes
 import qualified Opaleye.Internal.HaskellDB.Sql.Default as HDBD
 import qualified Data.ByteString.Char8 as BS
-import Data.Scientific
+import Data.Ratio
 import GHC.Int
 
 import Control.Monad.Trans.Class
@@ -252,7 +252,7 @@ getHaskellTypeFor ct = case ct of
   "int8"        -> lift $ (ConT) <$> safeLookup' "Int64"
   "float4"      -> lift $ (ConT) <$> safeLookup' "Float"
   "float8"      -> lift $ (ConT) <$> safeLookup' "Double"
-  "numeric"     -> lift $ (ConT) <$> safeLookup' "Scientific"
+  "numeric"     -> lift $ (ConT) <$> safeLookup' "Rational"
   "char"        -> lift $ (ConT) <$> safeLookup' "Char"
   "text"        -> lift $ (ConT) <$> safeLookup' "Text"
   "bytea"       -> lift $ (ConT) <$> safeLookup' "ByteString"
@@ -780,13 +780,13 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
 
     instance QueryRunnerColumnDefault PGJson HStoreList where
       queryRunnerColumnDefault = fieldQueryRunnerColumn
-    instance QueryRunnerColumnDefault PGNumeric Scientific where
+    instance QueryRunnerColumnDefault PGNumeric Rational where
       queryRunnerColumnDefault = fieldQueryRunnerColumn
-    instance Default Constant Scientific (Column PGNumeric) where
+    instance Default Constant Rational (Column PGNumeric) where
       def = Constant f1
         where
-        f1 :: Scientific -> (Column PGNumeric)
-        f1 x = unsafeCoerceColumn $ pgDouble $ toRealFloat x
+        f1 :: Rational -> (Column PGNumeric)
+        f1 x = unsafeCoerceColumn $ pgDouble $ fromRational x
     |]
   decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
   return $ decs ++ rationalIns
