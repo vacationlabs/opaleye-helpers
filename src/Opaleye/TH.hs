@@ -32,7 +32,7 @@ import Opaleye
 import Opaleye.Internal.PGTypes
 import qualified Opaleye.Internal.HaskellDB.Sql.Default as HDBD
 import qualified Data.ByteString.Char8 as BS
-import Data.Ratio
+import Data.Decimal
 import GHC.Int
 
 import Control.Monad.Trans.Class
@@ -252,7 +252,7 @@ getHaskellTypeFor ct = case ct of
   "int8"        -> lift $ (ConT) <$> safeLookup' "Int64"
   "float4"      -> lift $ (ConT) <$> safeLookup' "Float"
   "float8"      -> lift $ (ConT) <$> safeLookup' "Double"
-  "numeric"     -> lift $ (ConT) <$> safeLookup' "Rational"
+  "numeric"     -> lift $ (ConT) <$> safeLookup' "Decimal"
   "char"        -> lift $ (ConT) <$> safeLookup' "Char"
   "text"        -> lift $ (ConT) <$> safeLookup' "Text"
   "bytea"       -> lift $ (ConT) <$> safeLookup' "ByteString"
@@ -777,16 +777,17 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
         f1 hl = castToType "hstore" $ toStringLit hl
         toStringLit :: HStoreList -> String
         toStringLit hl = let (Escape bs) = toField hl in HDBD.quote (BS.unpack bs)
-
+    instance FromField Decimal where
+      fromField field maybebs = (realToFrac :: Rational -> Decimal)  <$> fromField field maybebs
     instance QueryRunnerColumnDefault PGJson HStoreList where
       queryRunnerColumnDefault = fieldQueryRunnerColumn
-    instance QueryRunnerColumnDefault PGNumeric Rational where
+    instance QueryRunnerColumnDefault PGNumeric Decimal where
       queryRunnerColumnDefault = fieldQueryRunnerColumn
-    instance Default Constant Rational (Column PGNumeric) where
+    instance Default Constant Decimal (Column PGNumeric) where
       def = Constant f1
         where
-        f1 :: Rational -> (Column PGNumeric)
-        f1 x = unsafeCoerceColumn $ pgDouble $ fromRational x
+        f1 :: Decimal -> (Column PGNumeric)
+        f1 x = unsafeCoerceColumn $ pgDouble $ realToFrac x
     |]
   decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
   return $ decs ++ rationalIns
