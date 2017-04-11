@@ -34,6 +34,7 @@ import qualified Opaleye.Internal.HaskellDB.Sql.Default as HDBD
 import qualified Data.ByteString.Char8 as BS
 import Data.Decimal
 import GHC.Int
+import GHC.Generics (Generic)
 
 import Control.Monad.Trans.Class
 import Control.Monad.State.Lazy
@@ -501,7 +502,7 @@ makeNewTypes = do
       makeNewType' (TypeName name) = do
         let bang' = Bang NoSourceUnpackedness NoSourceStrictness
         haskellType <- makeRawHaskellType ci
-        return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang', haskellType)]) [ConT ''Show, ConT ''Eq, ConT ''Ord]
+        return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang', haskellType)]) [ConT ''Show, ConT ''Eq, ConT ''Ord, ConT ''Generic]
 
 makeFieldName :: TypeName -> ColumnName -> String
 makeFieldName (TypeName modelName) (ColumnName (s:ss)) = "_" ++ (toLower <$> modelName) ++ (toUpper s:replaceUnderscore ss)
