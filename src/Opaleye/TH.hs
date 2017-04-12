@@ -6,6 +6,7 @@ module Opaleye.TH (
     , makeOpaleyeTables
     , makeAdaptorAndInstances
     , makeSecondaryModel
+    , createCommonInstances
     , TableName(..)
     , ColumnName(..)
     , TypeName(..)
@@ -812,7 +813,7 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (show $ makePolyName x)) models
   decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
-  return $ decs 
+  return $ decs
   ) env
 
 getProtectedFieldsFor :: Options -> TypeName -> [ColumnName]
