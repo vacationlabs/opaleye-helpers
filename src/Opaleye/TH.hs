@@ -812,9 +812,6 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (show $ makePolyName x)) models
   instances <- lift createInstances
-  lift $ runIO $ putStrLn "-----------------------------------"
-  lift $ runIO $ putStrLn $ show instances
-  lift $ runIO $ putStrLn "-----------------------------------"
   decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
   return $ decs ++ instances
   ) env
