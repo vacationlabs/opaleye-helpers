@@ -768,8 +768,8 @@ makeAdaptorAndInstances getConnection opt = do
   dbInfo <- getDbinfo getConnection opt
   makeAdaptorAndInstances' (dbInfo, opt, [])
 
-createInstances :: Q [Dec]
-createInstances = do
+createCommonInstances :: Q [Dec]
+createCommonInstances = do
   ClassI _ i <- reify ''Default
   let instanceTypes = getTypeFromInstanceD <$> i
   defConstant <- [t|Default Constant HStoreList (Column PGJson)|]
@@ -811,9 +811,8 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   let models = (modelName.snd) <$> tableOptions options
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (show $ makePolyName x)) models
-  instances <- lift createInstances
   decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
-  return $ decs ++ instances
+  return $ decs 
   ) env
 
 getProtectedFieldsFor :: Options -> TypeName -> [ColumnName]
