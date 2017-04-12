@@ -329,17 +329,21 @@ makeOpaleyeTables' env = do
   where
     makeModelTypeClass :: EnvM [Dec]
     makeModelTypeClass = lift $ do
-      Just _ <- lookupTypeName "MonadIO"
-      let modelTVar = VarT $ mkName "model"
-      let mTVar = VarT $ mkName "m"
-      insertType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
-      updateType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
-      deleteType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) Int64 |]
-      let
-        insertSig = SigD (mkName "insertModel") insertType
-        updateSig = SigD (mkName "updateModel") updateType
-        deleteSig = SigD (mkName "deleteModel") deleteType
-      return $ [ClassD [] (mkName "DbModel") [PlainTV $ mkName "model"] [] [insertSig, updateSig, deleteSig]]
+      dbModel <- lookupTypeName "DbModel"
+      case dbModel of 
+        Just _ -> return []
+        Nothing -> do
+          Just _ <- lookupTypeName "MonadIO"
+          let modelTVar = VarT $ mkName "model"
+          let mTVar = VarT $ mkName "m"
+          insertType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
+          updateType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
+          deleteType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) Int64 |]
+          let
+            insertSig = SigD (mkName "insertModel") insertType
+            updateSig = SigD (mkName "updateModel") updateType
+            deleteSig = SigD (mkName "deleteModel") deleteType
+          return $ [ClassD [] (mkName "DbModel") [PlainTV $ mkName "model"] [] [insertSig, updateSig, deleteSig]]
 
 makeLensesForTable :: TableName -> TypeName -> EnvM [Dec]
 makeLensesForTable t r = do
@@ -764,34 +768,55 @@ makeAdaptorAndInstances getConnection opt = do
   dbInfo <- getDbinfo getConnection opt
   makeAdaptorAndInstances' (dbInfo, opt, [])
 
+createInstances :: Q [Dec]
+createInstances = do
+  ClassI _ i <- reify ''Default
+  let instanceTypes = getTypeFromInstanceD <$> i
+  defConstant <- [t|Default Constant HStoreList (Column PGJson)|]
+  hstoreInstances <- case find (== defConstant) instanceTypes of
+    Nothing -> [d|
+      instance Default Constant HStoreList (Column PGJson) where
+        def = Constant f1
+          where
+          f1 :: HStoreList -> Column PGJson
+          f1 hl = castToType "hstore" $ toStringLit hl
+          toStringLit :: HStoreList -> String
+          toStringLit hl = let (Escape bs) = toField hl in HDBD.quote (BS.unpack bs)
+      instance QueryRunnerColumnDefault PGJson HStoreList where
+        queryRunnerColumnDefault = fieldQueryRunnerColumn
+      |]
+    _ -> return []
+  defNumeric <- [t|Default Constant Decimal (Column PGNumeric)|]
+  decimalInstances <- case find (== defNumeric) instanceTypes of
+    Nothing -> [d|
+      instance FromField Decimal where
+        fromField field maybebs = (realToFrac :: Rational -> Decimal)  <$> fromField field maybebs
+      instance QueryRunnerColumnDefault PGNumeric Decimal where
+        queryRunnerColumnDefault = fieldQueryRunnerColumn
+      instance Default Constant Decimal (Column PGNumeric) where
+        def = Constant f1
+          where
+          f1 :: Decimal -> (Column PGNumeric)
+          f1 x = unsafeCoerceColumn $ pgDouble $ realToFrac x
+      |]
+    _ -> return []
+  return $ hstoreInstances ++ decimalInstances
+
+getTypeFromInstanceD :: Dec -> Type
+getTypeFromInstanceD (InstanceD _ _ t _) = t
+
 makeAdaptorAndInstances' :: Env -> Q [Dec]
 makeAdaptorAndInstances' env = fst <$> runStateT (do
   (_, options, _) <- get
   let models = (modelName.snd) <$> tableOptions options
   let an = makeAdapterName <$> models
   pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (show $ makePolyName x)) models
-  rationalIns <- lift $ [d|
-    instance Default Constant HStoreList (Column PGJson) where
-      def = Constant f1
-        where
-        f1 :: HStoreList -> Column PGJson
-        f1 hl = castToType "hstore" $ toStringLit hl
-        toStringLit :: HStoreList -> String
-        toStringLit hl = let (Escape bs) = toField hl in HDBD.quote (BS.unpack bs)
-    instance FromField Decimal where
-      fromField field maybebs = (realToFrac :: Rational -> Decimal)  <$> fromField field maybebs
-    instance QueryRunnerColumnDefault PGJson HStoreList where
-      queryRunnerColumnDefault = fieldQueryRunnerColumn
-    instance QueryRunnerColumnDefault PGNumeric Decimal where
-      queryRunnerColumnDefault = fieldQueryRunnerColumn
-    instance Default Constant Decimal (Column PGNumeric) where
-      def = Constant f1
-        where
-        f1 :: Decimal -> (Column PGNumeric)
-        f1 x = unsafeCoerceColumn $ pgDouble $ realToFrac x
-    |]
+  instances <- lift createInstances
+  lift $ runIO $ putStrLn "-----------------------------------"
+  lift $ runIO $ putStrLn $ show instances
+  lift $ runIO $ putStrLn "-----------------------------------"
   decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
-  return $ decs ++ rationalIns
+  return $ decs ++ instances
   ) env
 
 getProtectedFieldsFor :: Options -> TypeName -> [ColumnName]
