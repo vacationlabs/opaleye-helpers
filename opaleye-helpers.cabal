@@ -15,9 +15,10 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Opaleye.TH
+  exposed-modules:     Opaleye.TH, Opaleye.TH.CommonInstances
   other-modules:       Opaleye.TH.Transformations
                        , Opaleye.TH.Data
+                       , VacationLabs.Database.PostgreSQL.Simple.HStore
   default-extensions:  RecordWildCards, ViewPatterns
   build-depends:       base >= 4.7 && < 5
                        , bytestring
@@ -32,6 +33,10 @@ library
                        , lens
                        , transformers
                        , template-haskell
+                       -- dependencies of Hstore
+                       , attoparsec
+                       , containers
+
   default-language:    Haskell2010
   ghc-options:         -Wall
 

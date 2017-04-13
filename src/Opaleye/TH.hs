@@ -805,6 +805,7 @@ createCommonInstances = do
 
 getTypeFromInstanceD :: Dec -> Type
 getTypeFromInstanceD (InstanceD _ _ t _) = t
+getTypeFromInstanceD _ = error "Should not be here"
 
 makeAdaptorAndInstances' :: Env -> Q [Dec]
 makeAdaptorAndInstances' env = fst <$> runStateT (do
