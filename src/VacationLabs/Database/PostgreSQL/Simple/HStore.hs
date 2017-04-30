@@ -42,11 +42,6 @@ import           Data.Monoid(Monoid(..))
 import           Database.PostgreSQL.Simple.FromField
 import           Database.PostgreSQL.Simple.ToField
 
-import Data.Profunctor.Product.Default
-import Opaleye hiding (not, unsafeCoerce)
-import Opaleye.Internal.PGTypes
-import qualified Opaleye.Internal.HaskellDB.Sql.Default as HDBD
-import qualified Data.ByteString.Char8 as BSC8
 import Data.Maybe
 
 class ToHStore a where

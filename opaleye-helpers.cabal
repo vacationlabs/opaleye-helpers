@@ -33,6 +33,8 @@ library
                        , lens
                        , transformers
                        , template-haskell
+                       , safe
+                       , uuid
                        -- dependencies of Hstore
                        , attoparsec
                        , containers

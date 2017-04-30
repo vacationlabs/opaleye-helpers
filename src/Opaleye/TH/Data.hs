@@ -1,10 +1,13 @@
+{-# LANGUAGE DeriveLift #-}
+
 module Opaleye.TH.Data where
 
 import Control.Monad.State.Lazy
 import Language.Haskell.TH
+import Language.Haskell.TH.Syntax
 
-newtype TableName = TableName String deriving (Eq)
-newtype ColumnName = ColumnName String deriving (Eq)
+newtype TableName = TableName String deriving (Eq, Lift)
+newtype ColumnName = ColumnName String deriving (Eq, Lift)
 newtype FieldName = FieldName String deriving (Eq)
 newtype TypeName = TypeName String deriving (Eq)
 
@@ -55,7 +58,12 @@ data ColumnInfo = ColumnInfo {
   , columnDefault :: Bool
   , columnNullable :: Bool
   , columnPrimary :: Bool
-} deriving (Show)
+} deriving (Show, Lift)
+
+data MappedColumnInfo a = MappedColumnInfo ColumnInfo deriving(Show)
+
+class DbField a where
+  mappedColumnInfo :: MappedColumnInfo a
 
 type TableInfo = (TableName, [ColumnInfo])
 type DbInfo = [TableInfo]

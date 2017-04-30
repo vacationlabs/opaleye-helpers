@@ -5,11 +5,11 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Opaleye.TH.CommonInstances where
 
 import Opaleye
-import Database.PostgreSQL.Simple
 import VacationLabs.Database.PostgreSQL.Simple.HStore
 import Database.PostgreSQL.Simple.FromField
 import Data.Profunctor.Product.Default

@@ -16,40 +16,40 @@ module Opaleye.TH (
     )
 where 
 
-import Database.PostgreSQL.Simple
-import Database.PostgreSQL.Simple.FromField hiding (name)
-import Database.PostgreSQL.Simple.HStore
-import Database.PostgreSQL.Simple.ToField
-import Language.Haskell.TH
-import Language.Haskell.TH.Syntax hiding (lift)
-import Control.Monad.IO.Class
-import Control.Monad
-import Data.Char
-import Data.Maybe
-import Data.List
-import Data.Profunctor.Product.TH (makeAdaptorAndInstance)
-import Data.Profunctor.Product.Default
-import Opaleye
-import Opaleye.Internal.PGTypes
+import           Control.Lens                           hiding (swapped)
+import           Control.Monad
+import           Control.Monad.IO.Class
+import           Control.Monad.State.Lazy
+import qualified Data.ByteString.Char8                  as BS
+import           Data.Char
+import           Data.Decimal
+import           Data.List
+import           Data.Maybe
+import           Data.Profunctor.Product.Default
+import           Data.Profunctor.Product.TH             (makeAdaptorAndInstance)
+import           Database.PostgreSQL.Simple
+import           Database.PostgreSQL.Simple.FromField   hiding (name)
+import           Database.PostgreSQL.Simple.HStore
+import           Database.PostgreSQL.Simple.ToField
+import           GHC.Generics                           (Generic)
+import           GHC.Int
+import           Language.Haskell.TH
+import           Language.Haskell.TH.Syntax             hiding (lift)
+import           Opaleye
 import qualified Opaleye.Internal.HaskellDB.Sql.Default as HDBD
-import qualified Data.ByteString.Char8 as BS
-import Data.Decimal
-import GHC.Int
-import GHC.Generics (Generic)
-
-import Control.Monad.Trans.Class
-import Control.Monad.State.Lazy
-
-import Control.Lens hiding (swapped)
-
-import Opaleye.TH.Data
-import qualified Opaleye.TH.Transformations as TR
+import           Opaleye.Internal.PGTypes
+import           Opaleye.TH.Data
+import           Safe
+import qualified Opaleye.TH.Transformations             as TR
 
 makePolyName :: TypeName -> TypeName
 makePolyName (TypeName modelName) = TypeName $ modelName ++ "Poly"
 
 makeTablename :: TableName -> String
 makeTablename (TableName t) = t ++ "Table"
+
+unwrapTablename :: TableName -> String
+unwrapTablename (TableName t) = t 
 
 makePGReadTypeName :: TypeName -> TypeName
 makePGReadTypeName (TypeName tn) = TypeName $ tn ++ "PGRead"
@@ -70,7 +70,7 @@ makeHaskellNameWithMaybes :: TypeName -> TypeName
 makeHaskellNameWithMaybes (TypeName tn) = TypeName $ tn ++ "MaybeWrapped"
 
 getFieldInfosForTable :: DbInfo -> TableName -> [ColumnInfo]
-getFieldInfosForTable dbInfo tname = fromJust $ lookup tname dbInfo
+getFieldInfosForTable dbInfo tname = fromJustNote ("Cannot find info for " ++ unwrapTablename tname)  $ lookup tname dbInfo
 
 getDbinfo :: IO Connection -> Options -> Q DbInfo
 getDbinfo getConnection options = runIO $ do
@@ -93,7 +93,7 @@ getDbinfo getConnection options = runIO $ do
 
 getColumns :: Connection -> Options -> TableName -> IO TableInfo
 getColumns conn options tn@(TableName tname) = do
-  let tOptions = fromJust $ lookup tn $ tableOptions options
+  let tOptions = getTableOptions tn options
   field_rows <- query conn "SELECT \
       \ c.column_name, c.udt_name, c.column_default, c.is_nullable, (array_agg(tc.constraint_type::text) @> ARRAY ['PRIMARY KEY']) as is_primary\
       \ FROM\
@@ -170,31 +170,31 @@ getPGColumnType ct = lift $ (getType ct)
   where
     getType :: ColumnType -> Q Type
     getType ct' = do
-      pg_array <- ConT <$> fromJust <$> lookupTypeName "PGArray"
+      pg_array <- ConT <$> (safeLookupTypeName $ TypeName "PGArray")
       case ct' of 
-        "bool"        -> ConT <$> fromJust <$> lookupTypeName "PGBool"
-        "int2"        -> ConT <$> fromJust <$> lookupTypeName "PGInt2"
-        "int4"        -> ConT <$> fromJust <$> lookupTypeName "PGInt4"
-        "int8"        -> ConT <$> fromJust <$> lookupTypeName "PGInt8"
-        "float4"      -> ConT <$> fromJust <$> lookupTypeName "PGFloat4"
-        "float8"      -> ConT <$> fromJust <$> lookupTypeName "PGFloat8"
-        "numeric"     -> ConT <$> fromJust <$> lookupTypeName "PGNumeric"
-        "char"        -> ConT <$> fromJust <$> lookupTypeName "PGText"
-        "text"        -> ConT <$> fromJust <$> lookupTypeName "PGText"
-        "bytea"       -> ConT <$> fromJust <$> lookupTypeName "PGBytea"
-        "date"        -> ConT <$> fromJust <$> lookupTypeName "PGDate"
-        "timestamp"   -> ConT <$> fromJust <$> lookupTypeName "PGTimestamp"
-        "timestamptz" -> ConT <$> fromJust <$> lookupTypeName "PGTimestamptz"
-        "time"        -> ConT <$> fromJust <$> lookupTypeName "PGTime"
-        "timetz"      -> ConT <$> fromJust <$> lookupTypeName "PGTime"
-        "interval"    -> ConT <$> fromJust <$> lookupTypeName "PGInt8"
-        "uuid"        -> ConT <$> fromJust <$> lookupTypeName "PGUuid"
-        "json"        -> ConT <$> fromJust <$> lookupTypeName "PGJson"
-        "jsonb"       -> ConT <$> fromJust <$> lookupTypeName "PGJsonb"
-        "hstore"      -> ConT <$> fromJust <$> lookupTypeName "PGJson"
-        "varchar"     -> ConT <$> fromJust <$> lookupTypeName "PGText"
-        "oid"         -> ConT <$> fromJust <$> lookupTypeName "PGInt8"
-        "inet"        -> ConT <$> fromJust <$> lookupTypeName "PGText"
+        "bool"        -> ConT <$> (safeLookupTypeName $ TypeName "PGBool")
+        "int2"        -> ConT <$> (safeLookupTypeName $ TypeName "PGInt2")
+        "int4"        -> ConT <$> (safeLookupTypeName $ TypeName "PGInt4")
+        "int8"        -> ConT <$> (safeLookupTypeName $ TypeName "PGInt8")
+        "float4"      -> ConT <$> (safeLookupTypeName $ TypeName "PGFloat4")
+        "float8"      -> ConT <$> (safeLookupTypeName $ TypeName "PGFloat8")
+        "numeric"     -> ConT <$> (safeLookupTypeName $ TypeName "PGNumeric")
+        "char"        -> ConT <$> (safeLookupTypeName $ TypeName "PGText")
+        "text"        -> ConT <$> (safeLookupTypeName $ TypeName "PGText")
+        "bytea"       -> ConT <$> (safeLookupTypeName $ TypeName "PGBytea")
+        "date"        -> ConT <$> (safeLookupTypeName $ TypeName "PGDate")
+        "timestamp"   -> ConT <$> (safeLookupTypeName $ TypeName "PGTimestamp")
+        "timestamptz" -> ConT <$> (safeLookupTypeName $ TypeName "PGTimestamptz")
+        "time"        -> ConT <$> (safeLookupTypeName $ TypeName "PGTime")
+        "timetz"      -> ConT <$> (safeLookupTypeName $ TypeName "PGTime")
+        "interval"    -> ConT <$> (safeLookupTypeName $ TypeName "PGInt8")
+        "uuid"        -> ConT <$> (safeLookupTypeName $ TypeName "PGUuid")
+        "json"        -> ConT <$> (safeLookupTypeName $ TypeName "PGJson")
+        "jsonb"       -> ConT <$> (safeLookupTypeName $ TypeName "PGJsonb")
+        "hstore"      -> ConT <$> (safeLookupTypeName $ TypeName "PGJson")
+        "varchar"     -> ConT <$> (safeLookupTypeName $ TypeName "PGText")
+        "oid"         -> ConT <$> (safeLookupTypeName $ TypeName "PGInt8")
+        "inet"        -> ConT <$> (safeLookupTypeName $ TypeName "PGText")
         "_varchar"    -> (AppT pg_array) <$> getType "text"
         "_text"       -> (AppT pg_array) <$> getType "text"
         "_int4"       -> (AppT pg_array) <$> getType "int4"
@@ -334,7 +334,10 @@ makeOpaleyeTables' env = do
       case dbModel of 
         Just _ -> return []
         Nothing -> do
-          Just _ <- lookupTypeName "MonadIO"
+          x <- lookupTypeName "MonadIO"
+          case x of
+            Nothing -> error "MonadIO is not in scope"
+            _ -> return ()
           let modelTVar = VarT $ mkName "model"
           let mTVar = VarT $ mkName "m"
           insertType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
@@ -671,9 +674,10 @@ makeNewtypeInstances = do
     makeInstancesForNewtypeColumn :: (ColumnInfo, Name) -> EnvM [Dec]
     makeInstancesForNewtypeColumn (ci, ntName) = do
         fromFieldInstance <- makeFromFieldInstance ci ntName
+        dbFieldInstance <- makeDbFieldInstance ci ntName
         queryRunnerInstance <- makeQueryRunnerInstance ci ntName
         defaultInstance <- makeDefaultInstance ci ntName
-        return $ fromFieldInstance ++ queryRunnerInstance ++ defaultInstance
+        return $ fromFieldInstance ++ dbFieldInstance ++ queryRunnerInstance ++ defaultInstance
       where
         makeFromFieldInstance :: ColumnInfo -> Name -> EnvM [Dec]
         makeFromFieldInstance _ ntName' = do
@@ -682,6 +686,13 @@ makeNewtypeInstances = do
           lift $ [d|
             instance FromField $(ntNameQ) where
               fromField field bs = fmap $(ntNameExpQ) (fromField field bs)
+            |]
+        makeDbFieldInstance :: ColumnInfo -> Name -> EnvM [Dec]
+        makeDbFieldInstance ci_ ntName' = do
+          let ntNameQ = return $ ConT ntName'
+          lift $ [d|
+            instance DbField $(ntNameQ) where
+              mappedColumnInfo = MappedColumnInfo ci_
             |]
         makeQueryRunnerInstance :: ColumnInfo -> Name -> EnvM [Dec]
         makeQueryRunnerInstance cli ntName' = do
@@ -762,7 +773,7 @@ makeNewtypeInstances = do
                 |]
 
 getTableOptions :: TableName -> Options -> TableOptions
-getTableOptions tname options = fromJust $ lookup tname (tableOptions options)
+getTableOptions tname options = fromJustNote ("Did not find options for table" ++ unwrapTablename tname) $ lookup tname (tableOptions options)
 
 makeAdaptorAndInstances :: IO Connection -> Options -> Q [Dec]
 makeAdaptorAndInstances getConnection opt = do
@@ -812,7 +823,7 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   (_, options, _) <- get
   let models = (modelName.snd) <$> tableOptions options
   let an = makeAdapterName <$> models
-  pn <- lift $ mapM (\x -> fromJust <$> lookupTypeName (show $ makePolyName x)) models
+  pn <- lift $ mapM (\x -> (safeLookupTypeName.TypeName) (show $ makePolyName x)) models
   decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
   return $ decs
   ) env
