@@ -12,6 +12,9 @@ module Opaleye.TH (
     , TypeName(..)
     , Options(..)
     , TableOptions(..)
+    , module Opaleye
+    , module Data.Profunctor.Product.Default
+    , module Data.Profunctor.Unsafe
     , module Opaleye.TH.Data
     )
 where 
@@ -20,13 +23,21 @@ import           Control.Lens                           hiding (swapped)
 import           Control.Monad
 import           Control.Monad.IO.Class
 import           Control.Monad.State.Lazy
+import           Data.Aeson                             (Value)
+import           Data.ByteString                        (ByteString)
 import qualified Data.ByteString.Char8                  as BS
 import           Data.Char
 import           Data.Decimal
 import           Data.List
 import           Data.Maybe
-import           Data.Profunctor.Product.Default
+import           Data.Profunctor.Product.Default        (Default (..))
 import           Data.Profunctor.Product.TH             (makeAdaptorAndInstance)
+import           Data.Profunctor.Unsafe                 (lmap, rmap)
+import           Data.Text                              (Text)
+import           Data.Time                              (Day, DiffTime,
+                                                         LocalTime, TimeOfDay,
+                                                         UTCTime)
+import           Data.UUID                              (UUID)
 import           Database.PostgreSQL.Simple
 import           Database.PostgreSQL.Simple.FromField   hiding (name)
 import           Database.PostgreSQL.Simple.HStore
@@ -35,17 +46,37 @@ import           GHC.Generics                           (Generic)
 import           GHC.Int
 import           Language.Haskell.TH
 import           Language.Haskell.TH.Syntax             hiding (lift)
-import           Opaleye
+import           Opaleye                                (Column, Nullable)
+import           Opaleye                                (Constant (..), PGArray,
+                                                         PGBool, PGBytea,
+                                                         PGDate, PGFloat4,
+                                                         PGFloat8, PGInt2,
+                                                         PGInt4, PGInt8, PGInt8,
+                                                         PGInt8, PGJson, PGJson,
+                                                         PGJsonb, PGNumeric,
+                                                         PGText, PGText, PGText,
+                                                         PGText, PGTime, PGTime,
+                                                         PGTimestamp,
+                                                         PGTimestamptz, PGUuid,
+                                                         QueryRunner,
+                                                         QueryRunnerColumnDefault,
+                                                         Table (..),
+                                                         fieldQueryRunnerColumn,
+                                                         null, optional, pgBool,
+                                                         pgInt4, pgInt8,
+                                                         pgLocalTime,
+                                                         pgStrictText,
+                                                         pgTimeOfDay, pgUTCTime,
+                                                         pgValueJSON,
+                                                         pgValueJSONB,
+                                                         queryRunnerColumnDefault,
+                                                         required, toNullable,
+                                                         unsafeCoerceColumn)
 import qualified Opaleye.Internal.HaskellDB.Sql.Default as HDBD
 import           Opaleye.Internal.PGTypes
 import           Opaleye.TH.Data
-import           Safe
 import qualified Opaleye.TH.Transformations             as TR
-import           Data.Text (Text)
-import           Data.ByteString (ByteString)
-import           Data.Time (Day, LocalTime, UTCTime, TimeOfDay, DiffTime)
-import           Data.Aeson (Value)
-import           Data.UUID (UUID)
+import           Safe
 
 makePolyName :: TypeName -> TypeName
 makePolyName (TypeName modelName) = TypeName $ modelName ++ "Poly"
@@ -376,8 +407,8 @@ makeOpaleyeTable t r = do
   lift $ do
     Just adapterFunc <- lookupValueName $ makeAdapterName r
     Just constructor <- lookupValueName $ show r
-    Just tableTypeName <- lookupTypeName "Table"
-    Just tableFunctionName <- lookupValueName "Table"
+    let tableTypeName = ''Table
+    ConE tableFunctionName <- [e|Table|]
     pgWriteTypeName <- safeLookupTypeName $ makePGWriteTypeName r
     pgReadTypeName <- safeLookupTypeName $ makePGReadTypeName r
     let funcName = mkName $ makeTablename t 
@@ -392,8 +423,8 @@ makeOpaleyeTable t r = do
   where
     getTableTypes :: [ColumnInfo] -> Q [Exp]
     getTableTypes fieldInfos = do
-      Just requiredName <- lookupValueName "required"
-      Just optionalName <- lookupValueName "optional"
+      VarE requiredName <- [e|required|]
+      VarE optionalName <- [e|optional|]
       return $ (mkExp requiredName optionalName) <$> fieldInfos
       where
         mkExp :: Name -> Name -> ColumnInfo -> Exp
