@@ -41,6 +41,11 @@ import           Opaleye.Internal.PGTypes
 import           Opaleye.TH.Data
 import           Safe
 import qualified Opaleye.TH.Transformations             as TR
+import           Data.Text (Text)
+import           Data.ByteString (ByteString)
+import           Data.Time (Day, LocalTime, UTCTime, TimeOfDay, DiffTime)
+import           Data.Aeson (Value)
+import           Data.UUID (UUID)
 
 makePolyName :: TypeName -> TypeName
 makePolyName (TypeName modelName) = TypeName $ modelName ++ "Poly"
@@ -139,7 +144,7 @@ makePgTypeWithNull ci = do
     _ -> error "Does not know how to make a nullable type"
   where
     addNullable :: Type -> Type
-    addNullable (AppT a b) = let nullable = ConT (mkName "Nullable") in (AppT a (AppT nullable b))
+    addNullable (AppT a b) = let nullable = ConT ''Nullable in (AppT a (AppT nullable b))
     addNullable _ = error "Unexpected pattern while trying to wrap Nullable"
     hasNullable :: Type -> Bool
     hasNullable (AppT (ConT a) _) = nameBase a == "Nullable" 
@@ -147,18 +152,13 @@ makePgTypeWithNull ci = do
 
 makePgType :: ColumnInfo -> EnvM Type
 makePgType ci@(ColumnInfo  {..}) = do
-  c <- lift $ lookupTypeName "Column"
-  case c of
-    Nothing -> error "Couldn't find opaleye's 'Column' type in scope. Have you imported Opaleye module?"
-    Just opColumn -> do
-      Just n <- lift $ lookupTypeName "Nullable"
-      x <- lookupNewtypeForField ci
-      case x of
-        Just pgType -> do
-          return $ makeFinalType opColumn n (ConT pgType)
-        Nothing -> do
-          pgType <- getPGColumnType columnType
-          return $ makeFinalType opColumn n pgType
+  x <- lookupNewtypeForField ci
+  case x of
+    Just pgType -> do
+      return $ makeFinalType ''Column ''Nullable (ConT pgType)
+    Nothing -> do
+      pgType <- getPGColumnType columnType
+      return $ makeFinalType ''Column ''Nullable pgType
   where
     makeFinalType :: Name -> Name -> Type -> Type
     makeFinalType typeName nullableName pgType = let 
@@ -170,31 +170,31 @@ getPGColumnType ct = lift $ (getType ct)
   where
     getType :: ColumnType -> Q Type
     getType ct' = do
-      pg_array <- ConT <$> (safeLookupTypeName $ TypeName "PGArray")
+      pg_array <- return $ ConT ''PGArray
       case ct' of 
-        "bool"        -> ConT <$> (safeLookupTypeName $ TypeName "PGBool")
-        "int2"        -> ConT <$> (safeLookupTypeName $ TypeName "PGInt2")
-        "int4"        -> ConT <$> (safeLookupTypeName $ TypeName "PGInt4")
-        "int8"        -> ConT <$> (safeLookupTypeName $ TypeName "PGInt8")
-        "float4"      -> ConT <$> (safeLookupTypeName $ TypeName "PGFloat4")
-        "float8"      -> ConT <$> (safeLookupTypeName $ TypeName "PGFloat8")
-        "numeric"     -> ConT <$> (safeLookupTypeName $ TypeName "PGNumeric")
-        "char"        -> ConT <$> (safeLookupTypeName $ TypeName "PGText")
-        "text"        -> ConT <$> (safeLookupTypeName $ TypeName "PGText")
-        "bytea"       -> ConT <$> (safeLookupTypeName $ TypeName "PGBytea")
-        "date"        -> ConT <$> (safeLookupTypeName $ TypeName "PGDate")
-        "timestamp"   -> ConT <$> (safeLookupTypeName $ TypeName "PGTimestamp")
-        "timestamptz" -> ConT <$> (safeLookupTypeName $ TypeName "PGTimestamptz")
-        "time"        -> ConT <$> (safeLookupTypeName $ TypeName "PGTime")
-        "timetz"      -> ConT <$> (safeLookupTypeName $ TypeName "PGTime")
-        "interval"    -> ConT <$> (safeLookupTypeName $ TypeName "PGInt8")
-        "uuid"        -> ConT <$> (safeLookupTypeName $ TypeName "PGUuid")
-        "json"        -> ConT <$> (safeLookupTypeName $ TypeName "PGJson")
-        "jsonb"       -> ConT <$> (safeLookupTypeName $ TypeName "PGJsonb")
-        "hstore"      -> ConT <$> (safeLookupTypeName $ TypeName "PGJson")
-        "varchar"     -> ConT <$> (safeLookupTypeName $ TypeName "PGText")
-        "oid"         -> ConT <$> (safeLookupTypeName $ TypeName "PGInt8")
-        "inet"        -> ConT <$> (safeLookupTypeName $ TypeName "PGText")
+        "bool"        -> return $ ConT ''PGBool
+        "int2"        -> return $ ConT ''PGInt2
+        "int4"        -> return $ ConT ''PGInt4
+        "int8"        -> return $ ConT ''PGInt8
+        "float4"      -> return $ ConT ''PGFloat4
+        "float8"      -> return $ ConT ''PGFloat8
+        "numeric"     -> return $ ConT ''PGNumeric
+        "char"        -> return $ ConT ''PGText
+        "text"        -> return $ ConT ''PGText
+        "bytea"       -> return $ ConT ''PGBytea
+        "date"        -> return $ ConT ''PGDate
+        "timestamp"   -> return $ ConT ''PGTimestamp
+        "timestamptz" -> return $ ConT ''PGTimestamptz
+        "time"        -> return $ ConT ''PGTime
+        "timetz"      -> return $ ConT ''PGTime
+        "interval"    -> return $ ConT ''PGInt8
+        "uuid"        -> return $ ConT ''PGUuid
+        "json"        -> return $ ConT ''PGJson
+        "jsonb"       -> return $ ConT ''PGJsonb
+        "hstore"      -> return $ ConT ''PGJson
+        "varchar"     -> return $ ConT ''PGText
+        "oid"         -> return $ ConT ''PGInt8
+        "inet"        -> return $ ConT ''PGText
         "_varchar"    -> (AppT pg_array) <$> getType "text"
         "_text"       -> (AppT pg_array) <$> getType "text"
         "_int4"       -> (AppT pg_array) <$> getType "int4"
@@ -202,27 +202,20 @@ getPGColumnType ct = lift $ (getType ct)
         other         -> error $ "Unimplemented PostgresQL type conversion for " ++ show other
 
 getPGConFuncExp :: Type -> EnvM Exp
-getPGConFuncExp (ConT name) = do
-  let tname = case (nameBase name) of 
-        "PGText" -> "pgStrictText"
-        "PGInt4" -> "pgInt4"
-        "PGInt8" -> "pgInt8"
-        "PGBool" -> "pgBool"
-        "PGTimestamp" -> "pgLocalTime"
-        "PGTimestampz" -> "pgUTCTime"
-        "pGTime" -> "pgTimeOfDay"
-        "PGJson" -> "pgValueJSON"
-        "PGJsonb" -> "pgValueJSONB"
-        n -> error "Unknown pgType name " ++ (show n)
-  g <- lift $ lookupValueName tname
-  case g of
-    Just a -> return $ VarE a
-    Nothing -> error $ "Cannot find " ++ tname
+getPGConFuncExp (ConT name) = lift $ case (nameBase name) of 
+        "PGText" -> [e|pgStrictText|]
+        "PGInt4" -> [e|pgInt4|]
+        "PGInt8" -> [e|pgInt8|]
+        "PGBool" -> [e|pgBool|]
+        "PGTimestamp" -> [e|pgLocalTime|]
+        "PGTimestampz" -> [e|pgUTCTime|]
+        "pGTime" -> [e|pgTimeOfDay|]
+        "PGJson" -> [e|pgValueJSON|]
+        "PGJsonb" -> [e|pgValueJSONB|]
+        n -> error $ "Unknown pgType name " ++ (show n)
+
 getPGConFuncExp (AppT _ pgt) = do
-  g <- lift $ lookupValueName "pgArray"
-  let pga_func = case g of
-        Just a -> VarE a
-        Nothing -> error $ "Cannot find pgArray"
+  pga_func <- lift [e|pgArray|]
   func1 <- getPGConFuncExp pgt
   return $ AppE pga_func func1
 getPGConFuncExp _ = error "Unexpected pattern while trying to make conversion function to pgType"
@@ -248,36 +241,31 @@ safeLookupTypeName (TypeName name) = do
 
 getHaskellTypeFor :: ColumnType -> EnvM Type
 getHaskellTypeFor ct = case ct of
-  "bool"        -> lift $ (ConT) <$> safeLookup' "Bool"
-  "int2"        -> lift $ (ConT) <$> safeLookup' "Int16"
-  "int4"        -> lift $ (ConT) <$> safeLookup' "Int"
-  "int8"        -> lift $ (ConT) <$> safeLookup' "Int64"
-  "float4"      -> lift $ (ConT) <$> safeLookup' "Float"
-  "float8"      -> lift $ (ConT) <$> safeLookup' "Double"
-  "numeric"     -> lift $ (ConT) <$> safeLookup' "Decimal"
-  "char"        -> lift $ (ConT) <$> safeLookup' "Char"
-  "text"        -> lift $ (ConT) <$> safeLookup' "Text"
-  "bytea"       -> lift $ (ConT) <$> safeLookup' "ByteString"
-  "date"        -> lift $ (ConT) <$> safeLookup' "Day"
-  "timestamp"   -> lift $ (ConT) <$> safeLookup' "LocalTime"
-  "timestamptz" -> lift $ (ConT) <$> safeLookup' "UTCTime"
-  "time"        -> lift $ (ConT) <$> safeLookup' "TimeOfDay"
-  "timetz"      -> lift $ (ConT) <$> safeLookup' "TimeOfDay"
-  "interval"    -> lift $ (ConT) <$> safeLookup' "DiffTime"
-  "uuid"        -> lift $ (ConT) <$> safeLookup' "UUID"
-  "json"        -> lift $ (ConT) <$> safeLookup' "Value"
-  "jsonb"       -> lift $ (ConT) <$> safeLookup' "Value"
-  "hstore"      -> lift $ (ConT) <$> safeLookup' "HStoreList"
-  "varchar"     -> lift $ (ConT) <$> safeLookup' "Text"
-  "_varchar"    -> (AppT array) <$> getHaskellTypeFor "varchar"
-  "_text"       -> (AppT array) <$> getHaskellTypeFor "varchar"
-  "_int4"       -> (AppT array) <$> getHaskellTypeFor "int4"
+  "bool"        -> return $ ConT ''Bool
+  "int2"        -> return $ ConT ''Int16
+  "int4"        -> return $ ConT ''Int
+  "int8"        -> return $ ConT ''Int64
+  "float4"      -> return $ ConT ''Float
+  "float8"      -> return $ ConT ''Double
+  "numeric"     -> return $ ConT ''Decimal
+  "char"        -> return $ ConT ''Char
+  "text"        -> return $ ConT ''Text
+  "bytea"       -> return $ ConT ''ByteString
+  "date"        -> return $ ConT ''Day
+  "timestamp"   -> return $ ConT ''LocalTime
+  "timestamptz" -> return $ ConT ''UTCTime
+  "time"        -> return $ ConT ''TimeOfDay
+  "timetz"      -> return $ ConT ''TimeOfDay
+  "interval"    -> return $ ConT ''DiffTime
+  "uuid"        -> return $ ConT ''UUID
+  "json"        -> return $ ConT ''Value
+  "jsonb"       -> return $ ConT ''Value
+  "hstore"      -> return $ ConT ''HStoreList
+  "varchar"     -> return $ ConT ''Text
+  "_varchar"    -> (AppT $ ConT ''[]) <$> getHaskellTypeFor "varchar"
+  "_text"       -> (AppT $ ConT ''[]) <$> getHaskellTypeFor "varchar"
+  "_int4"       -> (AppT $ ConT ''[]) <$> getHaskellTypeFor "int4"
   other         -> error $ "Unimplemented PostgresQL type conversion for " ++ show other
-  where
-    safeLookup' :: String -> Q Name
-    safeLookup' name = safeLookupTypeName (TypeName name)
-    array :: Type
-    array = ConT (''[])
 
 makeRawHaskellType :: ColumnInfo -> EnvM Type
 makeRawHaskellType ci = do
@@ -330,24 +318,16 @@ makeOpaleyeTables' env = do
   where
     makeModelTypeClass :: EnvM [Dec]
     makeModelTypeClass = lift $ do
-      dbModel <- lookupTypeName "DbModel"
-      case dbModel of 
-        Just _ -> return []
-        Nothing -> do
-          x <- lookupTypeName "MonadIO"
-          case x of
-            Nothing -> error "MonadIO is not in scope"
-            _ -> return ()
-          let modelTVar = VarT $ mkName "model"
-          let mTVar = VarT $ mkName "m"
-          insertType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
-          updateType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
-          deleteType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) Int64 |]
-          let
-            insertSig = SigD (mkName "insertModel") insertType
-            updateSig = SigD (mkName "updateModel") updateType
-            deleteSig = SigD (mkName "deleteModel") deleteType
-          return $ [ClassD [] (mkName "DbModel") [PlainTV $ mkName "model"] [] [insertSig, updateSig, deleteSig]]
+      let modelTVar = VarT $ mkName "model"
+      let mTVar = VarT $ mkName "m"
+      insertType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
+      updateType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) $(return modelTVar) |]
+      deleteType <- [t| (MonadIO $(return mTVar)) => Connection -> $(return modelTVar) -> $(return mTVar) Int64 |]
+      let
+        insertSig = SigD (mkName "insertModel") insertType
+        updateSig = SigD (mkName "updateModel") updateType
+        deleteSig = SigD (mkName "deleteModel") deleteType
+      return $ [ClassD [] (mkName "DbModel") [PlainTV $ mkName "model"] [] [insertSig, updateSig, deleteSig]]
 
 makeLensesForTable :: TableName -> TypeName -> EnvM [Dec]
 makeLensesForTable t r = do
@@ -581,20 +561,21 @@ makeOpaleyeModel t r = do
         nullablesType :: Type
         nullablesType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
         instanceHeadType :: Type
-        instanceHeadType = AppT (AppT (AppT (ConT $ mkName "Default") (ConT $ mkName "QueryRunner")) nullablesType) maybeModelType
+        instanceHeadType = AppT (AppT (AppT (ConT ''Default) (ConT ''QueryRunner)) nullablesType) maybeModelType
     makeAllNullFunction :: [ColumnInfo] -> Q [Dec]
     makeAllNullFunction fieldInfos = do
+      nullExp <- [e| Opaleye.null |]
       let
         pgReadWithNullsType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
         toAllNullFuncName = makeToAllNullFuncName r
         conversionFunctionSig = SigD (mkName toAllNullFuncName) $ pgReadWithNullsType
-        conversionFunction = FunD (mkName toAllNullFuncName) [Clause [] (NormalB conExp) []]
+        conversionFunction = FunD (mkName toAllNullFuncName) [Clause [] (NormalB (conExp nullExp)) []]
       return $ [conversionFunctionSig, conversionFunction]
       where
-        conExp :: Exp
-        conExp = foldl AppE (ConE $ mkName $ show r) $ getFieldExps
-        getFieldExps :: [Exp]
-        getFieldExps = const (VarE $ mkName "Opaleye.null") <$> fieldInfos
+        conExp :: Exp -> Exp
+        conExp nullExp = foldl AppE (ConE $ mkName $ show r) $ getFieldExps nullExp
+        getFieldExps :: Exp -> [Exp]
+        getFieldExps nullExp = const nullExp <$> fieldInfos
     makeAllNullableFunction :: [ColumnInfo] -> Q [Dec]
     makeAllNullableFunction fieldInfos = do
       let

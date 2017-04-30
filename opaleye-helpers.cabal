@@ -35,6 +35,7 @@ library
                        , template-haskell
                        , safe
                        , uuid
+                       , time
                        -- dependencies of Hstore
                        , attoparsec
                        , containers
