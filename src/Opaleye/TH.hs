@@ -404,7 +404,7 @@ makeLensesForTable t r = do
       put (a, b, clg ++ (extractDecClasses decs))
       where
       extractDecClasses :: [Dec] -> [String]
-      extractDecClasses decs' = fromJust <$> filter isJust (extractClassName <$> decs')
+      extractDecClasses decs' = catMaybes (extractClassName <$> decs')
         where
         extractClassName :: Dec -> Maybe String
         extractClassName (ClassD _ name _ _ _) = Just $ nameBase name
@@ -522,7 +522,7 @@ collectNewTypes = do
     getNewTypes (tbName, tbOptions) = do
       (dbInfo, _, _) <- get
       let fieldInfos = getFieldInfosForTable dbInfo tbName
-      return $ fromJust <$> (filter isJust $ (tryNewType tbOptions) <$> fieldInfos)
+      return $ catMaybes $ (tryNewType tbOptions) <$> fieldInfos
     tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, TypeName)
     tryNewType to' ci = do
       override <- lookup (columnName ci) (overrides to')
