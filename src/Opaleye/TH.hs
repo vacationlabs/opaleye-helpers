@@ -60,7 +60,7 @@ import           Opaleye                                (Constant (..), PGArray,
                                                          PGTimestamptz, PGUuid,
                                                          QueryRunner,
                                                          QueryRunnerColumnDefault,
-                                                         Table (..),
+                                                         Table (..), constant,
                                                          fieldQueryRunnerColumn,
                                                          null, optional, pgBool,
                                                          pgInt4, pgInt8,
@@ -70,8 +70,12 @@ import           Opaleye                                (Constant (..), PGArray,
                                                          pgValueJSON,
                                                          pgValueJSONB,
                                                          queryRunnerColumnDefault,
-                                                         required, toNullable,
-                                                         unsafeCoerceColumn)
+                                                         required, runDelete,
+                                                         runInsertManyReturning,
+                                                         runUpdateReturning,
+                                                         toNullable,
+                                                         unsafeCoerceColumn,
+                                                         (.==))
 import qualified Opaleye.Internal.HaskellDB.Sql.Default as HDBD
 import           Opaleye.Internal.PGTypes
 import           Opaleye.TH.Data
