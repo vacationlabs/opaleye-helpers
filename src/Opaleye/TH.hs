@@ -81,6 +81,7 @@ import           Opaleye.Internal.PGTypes
 import           Opaleye.TH.Data
 import qualified Opaleye.TH.Transformations             as TR
 import           Safe
+import qualified Data.Map as DM
 import           VacationLabs.Database.PostgreSQL.Simple.HStore (HStoreList(..))
 
 makePolyName :: TypeName -> TypeName
@@ -700,14 +701,15 @@ makeNewtypeInstances = do
   Data.List.concat  <$> (mapM makeInstancesForNewtypeColumn newTypes)
   where
     groupDups :: [(ColumnInfo, TypeName)] -> [(ColumnInfo, Name)]
-    groupDups pairs = fmap collect $ nub $ fmap snd pairs
+    groupDups pairs = verifyAndCollapse <$> (DM.assocs $ foldl foldFn DM.empty pairs)
       where
-        collect :: TypeName -> (ColumnInfo, Name)
-        collect tn = (fromJust $ lookup tn $ swapped, typeNameToName tn)
-        swapped :: [(TypeName, ColumnInfo)]
-        swapped = fmap swap pairs
-        swap :: (a, b) -> (b, a)
-        swap (x, y) = (y, x)
+        foldFn :: DM.Map Name [ColumnInfo] -> (ColumnInfo, TypeName) -> DM.Map Name [ColumnInfo]
+        foldFn map_ (ci, typeName) = DM.insertWith (++) (typeNameToName typeName) [ci] map_
+        verifyAndCollapse :: (Name, [ColumnInfo]) -> (ColumnInfo, Name)
+        verifyAndCollapse (_, []) = error "Got an empty list after grouping overridden types"
+        verifyAndCollapse (typeName, cis@(x:_)) = if length allTypes  == 1 then (x, typeName) else error $ "Custom data type configured to represent columns of different types. Type '" ++ (show typeName) ++ "' confgured to represent columns of types: " ++ (show allTypes)
+          where
+            allTypes = nub $ columnType <$> cis
     makeInstancesForNewtypeColumn :: (ColumnInfo, Name) -> EnvM [Dec]
     makeInstancesForNewtypeColumn (ci, ntName) = do
         fromFieldInstance <- makeFromFieldInstance ci ntName

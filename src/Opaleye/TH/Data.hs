@@ -9,7 +9,7 @@ import Language.Haskell.TH.Syntax
 newtype TableName = TableName String deriving (Eq, Lift)
 newtype ColumnName = ColumnName String deriving (Eq, Lift)
 newtype FieldName = FieldName String deriving (Eq)
-newtype TypeName = TypeName String deriving (Eq)
+newtype TypeName = TypeName String deriving (Eq, Ord)
 
 instance Show TableName where
   show (TableName x) = x
