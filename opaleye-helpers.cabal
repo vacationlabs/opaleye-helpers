@@ -19,7 +19,7 @@ library
   other-modules:       Opaleye.TH.Transformations
                        , Opaleye.TH.Data
                        , VacationLabs.Database.PostgreSQL.Simple.HStore
-  default-extensions:  RecordWildCards, ViewPatterns
+  default-extensions: RecordWildCards, ViewPatterns, PatternSynonyms, OverloadedStrings
   build-depends:       base >= 4.7 && < 5
                        , bytestring
                        , aeson

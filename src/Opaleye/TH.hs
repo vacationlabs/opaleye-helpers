@@ -12,6 +12,7 @@ module Opaleye.TH (
     , TypeName(..)
     , Options(..)
     , TableOptions(..)
+    , HStoreList(..)
     , module Opaleye
     , module Data.Profunctor.Product.Default
     , module Data.Profunctor.Unsafe
@@ -40,7 +41,6 @@ import           Data.Time                              (Day, DiffTime,
 import           Data.UUID                              (UUID)
 import           Database.PostgreSQL.Simple
 import           Database.PostgreSQL.Simple.FromField   hiding (name)
-import           Database.PostgreSQL.Simple.HStore
 import           Database.PostgreSQL.Simple.ToField
 import           GHC.Generics                           (Generic)
 import           GHC.Int
@@ -81,6 +81,7 @@ import           Opaleye.Internal.PGTypes
 import           Opaleye.TH.Data
 import qualified Opaleye.TH.Transformations             as TR
 import           Safe
+import           VacationLabs.Database.PostgreSQL.Simple.HStore (HStoreList(..))
 
 makePolyName :: TypeName -> TypeName
 makePolyName (TypeName modelName) = TypeName $ modelName ++ "Poly"
