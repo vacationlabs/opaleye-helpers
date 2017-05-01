@@ -91,6 +91,18 @@ makeTablename (TableName t) = t ++ "Table"
 unwrapTablename :: TableName -> String
 unwrapTablename (TableName t) = t 
 
+typeNameToName :: TypeName -> Name
+typeNameToName = mkName.unwrapTypeName
+
+unwrapTypeName :: TypeName -> String
+unwrapTypeName (TypeName tn) = tn
+
+unwrapFieldName :: FieldName -> String
+unwrapFieldName (FieldName tn) = tn
+
+unwrapColumnName :: ColumnName -> String
+unwrapColumnName (ColumnName cn) = cn
+
 makePGReadTypeName :: TypeName -> TypeName
 makePGReadTypeName (TypeName tn) = TypeName $ tn ++ "PGRead"
 
@@ -98,10 +110,10 @@ makePGReadAllNullableTypeName :: TypeName -> TypeName
 makePGReadAllNullableTypeName tn = let (TypeName t1) = makePGReadTypeName tn in TypeName (t1 ++ "NullableWrapped")
 
 makeToAllNullFuncName :: TypeName -> String
-makeToAllNullFuncName tn = lcFirst $ (show $ makePGReadTypeName tn) ++ "Null"
+makeToAllNullFuncName tn = lcFirst $ (unwrapTypeName $ makePGReadTypeName tn) ++ "Null"
 
 makeToAllNullableFuncName :: TypeName -> String
-makeToAllNullableFuncName tn = lcFirst $ (show $ makePGReadTypeName tn) ++ "ToNullableWrapped" 
+makeToAllNullableFuncName tn = lcFirst $ (unwrapTypeName $ makePGReadTypeName tn) ++ "ToNullableWrapped" 
 
 makePGWriteTypeName :: TypeName -> TypeName
 makePGWriteTypeName (TypeName tn) = TypeName $ tn ++ "PGWrite"
@@ -123,7 +135,7 @@ getDbinfo getConnection options = runIO $ do
     Nothing -> (tn, cis)
     where
       isPresent :: ColumnName -> Bool
-      isPresent cn = if cn `elem` availableColumns then True else error $ "Column for nullable override " ++ (show cn) ++ " not found in table " ++ (show tn) ++ ". Available columns are, " ++ (show availableColumns)
+      isPresent cn = if cn `elem` availableColumns then True else error $ "Column for nullable override " ++ (unwrapColumnName cn) ++ " not found in table " ++ (unwrapTablename tn) ++ ". Available columns are, " ++ (show availableColumns)
       availableColumns :: [ColumnName]
       availableColumns = columnName <$> cis
       fixNullable :: [ColumnName] -> ColumnInfo -> ColumnInfo
@@ -169,7 +181,11 @@ getColumns conn options tn@(TableName tname) = do
 lookupNewtypeForField :: ColumnInfo -> EnvM (Maybe Name)
 lookupNewtypeForField ci = do
   (_, options, _) <- get
-  return $ (mkName.show) <$> lookup (columnName ci) (overrideDefaultTypes $ getTableOptions (columnTableName ci) options)
+  return $ do
+    override <- lookup (columnName ci) (overrides $ getTableOptions (columnTableName ci) options)
+    case override of
+      OverrideNew tn -> Just $ mkName $ unwrapTypeName tn
+      _ -> Nothing
 
 makePgTypeWithNull :: ColumnInfo -> EnvM Type
 makePgTypeWithNull ci = do
@@ -410,7 +426,7 @@ makeOpaleyeTable t r = do
     Nothing -> makeModelInstance fieldInfos
   lift $ do
     Just adapterFunc <- lookupValueName $ makeAdapterName r
-    Just constructor <- lookupValueName $ show r
+    Just constructor <- lookupValueName $ unwrapTypeName r
     let tableTypeName = ''Table
     ConE tableFunctionName <- [e|Table|]
     pgWriteTypeName <- safeLookupTypeName $ makePGWriteTypeName r
@@ -420,7 +436,7 @@ makeOpaleyeTable t r = do
     let signature = SigD funcName funcType
     fieldExps <- (getTableTypes fieldInfos)
     let
-      funcExp = AppE (AppE (ConE tableFunctionName) (LitE $ StringL $ show t)) funcExp2
+      funcExp = AppE (AppE (ConE tableFunctionName) (LitE $ StringL $ unwrapTablename t)) funcExp2
       funcExp2 = AppE (VarE adapterFunc) funcExp3
       funcExp3 = foldl AppE (ConE constructor) fieldExps
       in return $ [signature, FunD funcName [Clause [] (NormalB funcExp) []]] ++ functions
@@ -434,7 +450,7 @@ makeOpaleyeTable t r = do
         mkExp :: Name -> Name -> ColumnInfo -> Exp
         mkExp rq opt ci = let 
                            ty = if (columnDefault ci) then opt else rq 
-                         in AppE (VarE ty) (LitE $ StringL $ show $ columnName ci)
+                         in AppE (VarE ty) (LitE $ StringL $ unwrapColumnName $ columnName ci)
     makeModelInstance :: [ColumnInfo] -> EnvM [Dec]
     makeModelInstance fieldInfos = do
       let (Just pField) = getPrimaryKeyField t r
@@ -447,19 +463,19 @@ makeOpaleyeTable t r = do
         let insertFunc = FunD (mkName "insertModel") [Clause pat (NormalB insertExp) convertToPgWrite]
         let updateFunc = FunD (mkName "updateModel") [Clause pat (NormalB updateExp) convertToPgWrite]
         let deleteFunc = FunD (mkName "deleteModel") [Clause pat (NormalB deleteExp) []]
-        return [InstanceD Nothing [] (AppT (ConT $ mkName "DbModel") (ConT $ mkName $ show r)) [insertFunc, updateFunc, deleteFunc]]
+        return [InstanceD Nothing [] (AppT (ConT $ mkName "DbModel") (ConT $ mkName $ unwrapTypeName r)) [insertFunc, updateFunc, deleteFunc]]
       where
         makeConversionFunction :: Q [Dec]
         makeConversionFunction = do
           let
-            pgReadType = ConT $ (mkName $ show $ makePGReadTypeName r)
-            pgWriteType = ConT $ (mkName $ show $ makePGWriteTypeName r)
+            pgReadType = ConT $ (mkName $ unwrapTypeName $ makePGReadTypeName r)
+            pgWriteType = ConT $ (mkName $ unwrapTypeName $ makePGWriteTypeName r)
             conversionFunctionSig = SigD (mkName "toWrite") $ AppT (AppT ArrowT pgReadType) pgWriteType
             conversionFunction = FunD (mkName "toWrite") [Clause [makePattern] (NormalB conExp) []]
           return $ [conversionFunctionSig, conversionFunction]
           where
             conExp :: Exp
-            conExp = foldl AppE (ConE $ mkName $ show r) $ getFieldExps
+            conExp = foldl AppE (ConE $ mkName $ unwrapTypeName r) $ getFieldExps
             getFieldExps :: [Exp]
             getFieldExps = zipWith getFieldExp fieldInfos [1..]
               where
@@ -469,7 +485,7 @@ makeOpaleyeTable t r = do
                   mkVarExp :: Exp
                   mkVarExp = VarE $ mkName $ "a" ++ (show idx)
             makePattern :: Pat
-            makePattern = ConP (mkName $ show r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
+            makePattern = ConP (mkName $ unwrapTypeName r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
         getPrimaryKeyField :: TableName -> TypeName -> (Maybe String)
         getPrimaryKeyField (TableName _) modelName = case (filter (\ci -> columnPrimary ci)) fieldInfos of
             [primaryField] -> Just $ makeFieldName modelName (columnName primaryField)
@@ -507,7 +523,11 @@ collectNewTypes = do
       let fieldInfos = getFieldInfosForTable dbInfo tbName
       return $ fromJust <$> (filter isJust $ (tryNewType tbOptions) <$> fieldInfos)
     tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, TypeName)
-    tryNewType to' ci = (\n -> (ci, n)) <$> lookup (columnName ci) (overrideDefaultTypes to')
+    tryNewType to' ci = do
+      override <- lookup (columnName ci) (overrides to')
+      case override of
+        OverrideNew tn -> Just (ci, tn)
+        _ -> Nothing
 
 makeNewTypes :: EnvM [Dec]
 makeNewTypes = do
@@ -540,15 +560,15 @@ replaceUnderscore [] = ""
 makeOpaleyeModel :: TableName -> TypeName -> EnvM [Dec]
 makeOpaleyeModel t r = do
   (dbInfo, options, _) <- get
-  let recordName = mkName $ show r
-  let recordPolyName = mkName $ show $ makePolyName r
+  let recordName = mkName $ unwrapTypeName r
+  let recordPolyName = mkName $ unwrapTypeName $ makePolyName r
   let fieldInfos = getFieldInfosForTable dbInfo t
   deriveInstances <- lift $ mapM (fmap (ConT).safeLookupTypeName) $ autoDeriveInstances $ getTableOptions t options
-  fields <- mapM (lift.newName.show.columnName) fieldInfos
+  fields <- mapM (lift.newName.unwrapColumnName.columnName) fieldInfos
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] deriveInstances
   (haskell, haskellWithMaybes) <- makeHaskellAlias r recordPolyName fieldInfos
-  (pgRead, pgReadWithNulls) <- makePgReadAlias (mkName $ show $ makePGReadTypeName r) recordPolyName fieldInfos
-  pgWrite <- makePgWriteAlias (mkName $ show $ makePGWriteTypeName r) recordPolyName fieldInfos
+  (pgRead, pgReadWithNulls) <- makePgReadAlias (mkName $ unwrapTypeName $ makePGReadTypeName r) recordPolyName fieldInfos
+  pgWrite <- makePgWriteAlias (mkName $ unwrapTypeName $ makePGWriteTypeName r) recordPolyName fieldInfos
   toAllNullable <- lift $ makeAllNullableFunction fieldInfos
   allNull <- lift $ makeAllNullFunction fieldInfos
   let qrifmw = makeQueryRunnerInstanceForMaybewrapped fieldInfos
@@ -569,7 +589,7 @@ makeOpaleyeModel t r = do
             makeWithMaybesToHaskell :: [Dec]
             makeWithMaybesToHaskell = let
                 TypeName hname = r
-                withMaybesName' = ConT $ (mkName $ show $ makeHaskellNameWithMaybes r)
+                withMaybesName' = ConT $ (mkName $ unwrapTypeName $ makeHaskellNameWithMaybes r)
                 unMaybefyFunctionSig = SigD funName $ AppT (AppT ArrowT withMaybesName') (AppT (ConT ''Maybe) (ConT $ mkName hname))
                 unMaybefyFunction = FunD funName [
                   Clause [makeNothingPattern] (NormalB $ ConE (mkName "Nothing")) [],
@@ -578,9 +598,9 @@ makeOpaleyeModel t r = do
                 in [unMaybefyFunctionSig, unMaybefyFunction]
                 where
                   makeNothingPattern :: Pat
-                  makeNothingPattern = ConP (mkName $ show r) $ replicate (Prelude.length fieldInfos) $ ConP (mkName "Nothing") []
+                  makeNothingPattern = ConP (mkName $ unwrapTypeName r) $ replicate (Prelude.length fieldInfos) $ ConP (mkName "Nothing") []
                   funExp :: Exp
-                  funExp = AppE (ConE (mkName "Just")) $ foldl AppE (ConE $ mkName $ show r) $ getFieldExps
+                  funExp = AppE (ConE (mkName "Just")) $ foldl AppE (ConE $ mkName $ unwrapTypeName r) $ getFieldExps
                   makePattern :: Pat
                   makePattern = (ConP $ mkName $ show r) $ zipWith getFieldPat fieldInfos [1..]
                     where
@@ -592,37 +612,37 @@ makeOpaleyeModel t r = do
                   getFieldExps :: [Exp]
                   getFieldExps =  VarE <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
         maybeModelType :: Type
-        maybeModelType = AppT (ConT $ mkName "Maybe") (ConT $ mkName $ show r)
+        maybeModelType = AppT (ConT $ mkName "Maybe") (ConT $ mkName $ unwrapTypeName r)
         nullablesType :: Type
-        nullablesType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
+        nullablesType = ConT $ (mkName $ (unwrapTypeName $ makePGReadAllNullableTypeName r))
         instanceHeadType :: Type
         instanceHeadType = AppT (AppT (AppT (ConT ''Default) (ConT ''QueryRunner)) nullablesType) maybeModelType
     makeAllNullFunction :: [ColumnInfo] -> Q [Dec]
     makeAllNullFunction fieldInfos = do
       nullExp <- [e| Opaleye.null |]
       let
-        pgReadWithNullsType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
+        pgReadWithNullsType = ConT $ (mkName $ (unwrapTypeName $ makePGReadAllNullableTypeName r))
         toAllNullFuncName = makeToAllNullFuncName r
         conversionFunctionSig = SigD (mkName toAllNullFuncName) $ pgReadWithNullsType
         conversionFunction = FunD (mkName toAllNullFuncName) [Clause [] (NormalB (conExp nullExp)) []]
       return $ [conversionFunctionSig, conversionFunction]
       where
         conExp :: Exp -> Exp
-        conExp nullExp = foldl AppE (ConE $ mkName $ show r) $ getFieldExps nullExp
+        conExp nullExp = foldl AppE (ConE $ mkName $ unwrapTypeName r) $ getFieldExps nullExp
         getFieldExps :: Exp -> [Exp]
         getFieldExps nullExp = const nullExp <$> fieldInfos
     makeAllNullableFunction :: [ColumnInfo] -> Q [Dec]
     makeAllNullableFunction fieldInfos = do
       let
-        pgReadType = ConT $ (mkName $ show $ makePGReadTypeName r)
-        pgReadWithNullsType = ConT $ (mkName $ (show $ makePGReadAllNullableTypeName r))
+        pgReadType = ConT $ (mkName $ unwrapTypeName $ makePGReadTypeName r)
+        pgReadWithNullsType = ConT $ (mkName $ (unwrapTypeName $ makePGReadAllNullableTypeName r))
         toAllNullFuncName = makeToAllNullableFuncName r
         conversionFunctionSig = SigD (mkName toAllNullFuncName) $ AppT (AppT ArrowT pgReadType) pgReadWithNullsType
         conversionFunction = FunD (mkName toAllNullFuncName) [Clause [makePattern] (NormalB conExp) []]
       return $ [conversionFunctionSig, conversionFunction]
       where
         conExp :: Exp
-        conExp = foldl AppE (ConE $ mkName $ show r) $ getFieldExps
+        conExp = foldl AppE (ConE $ mkName $ unwrapTypeName r) $ getFieldExps
         getFieldExps :: [Exp]
         getFieldExps = zipWith getFieldExp fieldInfos [1..]
           where
@@ -632,7 +652,7 @@ makeOpaleyeModel t r = do
               mkVarExp :: Exp
               mkVarExp = VarE $ mkName $ "a" ++ (show idx)
         makePattern :: Pat
-        makePattern = ConP (mkName $ show r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
+        makePattern = ConP (mkName $ unwrapTypeName r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
     makeHaskellAlias :: TypeName -> Name -> [ColumnInfo] -> EnvM (Dec, Dec)
     makeHaskellAlias htname@(TypeName tn) poly_name fieldInfos = do
       let hname = mkName tn
@@ -647,7 +667,7 @@ makeOpaleyeModel t r = do
     makePgReadAlias name modelType fieldInfos = do
       readType <- makePgReadType modelType fieldInfos
       readTypeWithNulls <- makePgReadTypeWithNulls modelType fieldInfos
-      let nameWithNulls = mkName $ show $ makePGReadAllNullableTypeName r
+      let nameWithNulls = mkName $ unwrapTypeName $ makePGReadAllNullableTypeName r
       return $ (TySynD name [] readType, TySynD nameWithNulls [] readTypeWithNulls)
     makePgReadTypeWithNulls :: Name -> [ColumnInfo] -> EnvM Type
     makePgReadTypeWithNulls modelType fieldInfos = do
@@ -682,7 +702,7 @@ makeNewtypeInstances = do
     groupDups pairs = fmap collect $ nub $ fmap snd pairs
       where
         collect :: TypeName -> (ColumnInfo, Name)
-        collect tn = (fromJust $ lookup tn $ swapped, mkName $ show tn)
+        collect tn = (fromJust $ lookup tn $ swapped, typeNameToName tn)
         swapped :: [(TypeName, ColumnInfo)]
         swapped = fmap swap pairs
         swap :: (a, b) -> (b, a)
@@ -839,7 +859,7 @@ makeAdaptorAndInstances' env = fst <$> runStateT (do
   (_, options, _) <- get
   let models = (modelName.snd) <$> tableOptions options
   let an = makeAdapterName <$> models
-  pn <- lift $ mapM (\x -> (safeLookupTypeName.TypeName) (show $ makePolyName x)) models
+  pn <- lift $ mapM (\x -> (safeLookupTypeName.TypeName) (unwrapTypeName $ makePolyName x)) models
   decs <- lift $ (Data.List.concat <$> zipWithM makeAdaptorAndInstance an pn)
   return $ decs
   ) env
@@ -871,7 +891,7 @@ makeSecondaryModel source target transformations options = do
   let 
     qrInstance = InstanceD Nothing [] instanceHeadQr [d]
     cnToString cn = makeFieldName target cn
-    protectedFields = (show <$> (getProtected transformations)) ++ (cnToString <$> (getProtectedFieldsFor options (TypeName $ nameBase source)))
+    protectedFields = (unwrapFieldName <$> (getProtected transformations)) ++ (cnToString <$> (getProtectedFieldsFor options (TypeName $ nameBase source)))
   dbMInstance <- if isSourceFull then do
     c <- dbmInstance mrtl mltr
     return [InstanceD Nothing [] instanceHeadDbm c] else return []
@@ -937,14 +957,14 @@ makeLenses'' modelname recordSpec protected makeProtected clg  = do
           return $ decs1 ++ decs2
     protectedFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
     protectedFieldNamer clgn eec x y fname = let
-      sFname = "Has" ++ (ucFirst $ drop ((length $ show $ modelname) + 1) $ nameBase fname)
+      sFname = "Has" ++ (ucFirst $ drop ((length $ unwrapTypeName $ modelname) + 1) $ nameBase fname)
       prted = elem sFname protected
       in if eec
          then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
          else (if (prted && (elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
     normalFieldNamer :: [String] -> Bool -> Name -> [Name] -> Name -> [DefName]
     normalFieldNamer clgn eec x y fname = let
-      sFname = "Has" ++ (ucFirst $ drop ((length $ show modelname) + 1) $ nameBase fname)
+      sFname = "Has" ++ (ucFirst $ drop ((length $ unwrapTypeName modelname) + 1) $ nameBase fname)
       prted = (Prelude.not $ elem (nameBase fname) protected)
       in if eec
          then (if (prted && (Prelude.not $ elem sFname clgn)) then (abbreviatedNamer x y fname) else [])
@@ -957,5 +977,5 @@ makeLenses'' modelname recordSpec protected makeProtected clg  = do
 makeLenses' :: TypeName -> [String] -> Bool -> EnvM [Dec]
 makeLenses' modelName protected makeProtected = do
   (_, _, clg) <- get
-  let modelTypeName = mkName $ show $ makePolyName modelName
+  let modelTypeName = mkName $ unwrapTypeName $ makePolyName modelName
   lift $ makeLenses'' modelName (RecordSpecName modelTypeName) protected makeProtected clg

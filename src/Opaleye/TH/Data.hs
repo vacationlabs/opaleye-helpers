@@ -25,9 +25,11 @@ instance Show TypeName where
 
 newtype Options = Options { tableOptions :: [(TableName, TableOptions)] }
 
+data OverrideType = OverrideUsing Name | OverrideNew TypeName deriving Show
+
 data TableOptions = TableOptions {
   modelName :: TypeName
-  , overrideDefaultTypes :: [(ColumnName, TypeName)]
+  , overrides :: [(ColumnName, OverrideType)]
   , protectedFields :: [ColumnName]
   , autoDeriveInstances :: [TypeName] 
   , ignoreNullables :: [ColumnName]
