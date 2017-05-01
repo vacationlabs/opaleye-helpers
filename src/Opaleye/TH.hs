@@ -184,7 +184,7 @@ lookupNewtypeForField ci = do
   return $ do
     override <- lookup (columnName ci) (overrides $ getTableOptions (columnTableName ci) options)
     case override of
-      OverrideNew tn -> Just $ mkName $ unwrapTypeName tn
+      OverrideNew tn -> Just $ typeNameToName tn
       _ -> Nothing
 
 makePgTypeWithNull :: ColumnInfo -> EnvM Type
@@ -463,19 +463,19 @@ makeOpaleyeTable t r = do
         let insertFunc = FunD (mkName "insertModel") [Clause pat (NormalB insertExp) convertToPgWrite]
         let updateFunc = FunD (mkName "updateModel") [Clause pat (NormalB updateExp) convertToPgWrite]
         let deleteFunc = FunD (mkName "deleteModel") [Clause pat (NormalB deleteExp) []]
-        return [InstanceD Nothing [] (AppT (ConT $ mkName "DbModel") (ConT $ mkName $ unwrapTypeName r)) [insertFunc, updateFunc, deleteFunc]]
+        return [InstanceD Nothing [] (AppT (ConT $ mkName "DbModel") (ConT $ typeNameToName r)) [insertFunc, updateFunc, deleteFunc]]
       where
         makeConversionFunction :: Q [Dec]
         makeConversionFunction = do
           let
-            pgReadType = ConT $ (mkName $ unwrapTypeName $ makePGReadTypeName r)
-            pgWriteType = ConT $ (mkName $ unwrapTypeName $ makePGWriteTypeName r)
+            pgReadType = ConT $ (typeNameToName $ makePGReadTypeName r)
+            pgWriteType = ConT $ (typeNameToName $ makePGWriteTypeName r)
             conversionFunctionSig = SigD (mkName "toWrite") $ AppT (AppT ArrowT pgReadType) pgWriteType
             conversionFunction = FunD (mkName "toWrite") [Clause [makePattern] (NormalB conExp) []]
           return $ [conversionFunctionSig, conversionFunction]
           where
             conExp :: Exp
-            conExp = foldl AppE (ConE $ mkName $ unwrapTypeName r) $ getFieldExps
+            conExp = foldl AppE (ConE $ typeNameToName r) $ getFieldExps
             getFieldExps :: [Exp]
             getFieldExps = zipWith getFieldExp fieldInfos [1..]
               where
@@ -485,7 +485,7 @@ makeOpaleyeTable t r = do
                   mkVarExp :: Exp
                   mkVarExp = VarE $ mkName $ "a" ++ (show idx)
             makePattern :: Pat
-            makePattern = ConP (mkName $ unwrapTypeName r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
+            makePattern = ConP (typeNameToName r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
         getPrimaryKeyField :: TableName -> TypeName -> (Maybe String)
         getPrimaryKeyField (TableName _) modelName = case (filter (\ci -> columnPrimary ci)) fieldInfos of
             [primaryField] -> Just $ makeFieldName modelName (columnName primaryField)
@@ -560,15 +560,15 @@ replaceUnderscore [] = ""
 makeOpaleyeModel :: TableName -> TypeName -> EnvM [Dec]
 makeOpaleyeModel t r = do
   (dbInfo, options, _) <- get
-  let recordName = mkName $ unwrapTypeName r
-  let recordPolyName = mkName $ unwrapTypeName $ makePolyName r
+  let recordName = typeNameToName r
+  let recordPolyName = typeNameToName $ makePolyName r
   let fieldInfos = getFieldInfosForTable dbInfo t
   deriveInstances <- lift $ mapM (fmap (ConT).safeLookupTypeName) $ autoDeriveInstances $ getTableOptions t options
   fields <- mapM (lift.newName.unwrapColumnName.columnName) fieldInfos
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] deriveInstances
   (haskell, haskellWithMaybes) <- makeHaskellAlias r recordPolyName fieldInfos
-  (pgRead, pgReadWithNulls) <- makePgReadAlias (mkName $ unwrapTypeName $ makePGReadTypeName r) recordPolyName fieldInfos
-  pgWrite <- makePgWriteAlias (mkName $ unwrapTypeName $ makePGWriteTypeName r) recordPolyName fieldInfos
+  (pgRead, pgReadWithNulls) <- makePgReadAlias (typeNameToName $ makePGReadTypeName r) recordPolyName fieldInfos
+  pgWrite <- makePgWriteAlias (typeNameToName $ makePGWriteTypeName r) recordPolyName fieldInfos
   toAllNullable <- lift $ makeAllNullableFunction fieldInfos
   allNull <- lift $ makeAllNullFunction fieldInfos
   let qrifmw = makeQueryRunnerInstanceForMaybewrapped fieldInfos
@@ -589,7 +589,7 @@ makeOpaleyeModel t r = do
             makeWithMaybesToHaskell :: [Dec]
             makeWithMaybesToHaskell = let
                 TypeName hname = r
-                withMaybesName' = ConT $ (mkName $ unwrapTypeName $ makeHaskellNameWithMaybes r)
+                withMaybesName' = ConT $ (typeNameToName $ makeHaskellNameWithMaybes r)
                 unMaybefyFunctionSig = SigD funName $ AppT (AppT ArrowT withMaybesName') (AppT (ConT ''Maybe) (ConT $ mkName hname))
                 unMaybefyFunction = FunD funName [
                   Clause [makeNothingPattern] (NormalB $ ConE (mkName "Nothing")) [],
@@ -598,9 +598,9 @@ makeOpaleyeModel t r = do
                 in [unMaybefyFunctionSig, unMaybefyFunction]
                 where
                   makeNothingPattern :: Pat
-                  makeNothingPattern = ConP (mkName $ unwrapTypeName r) $ replicate (Prelude.length fieldInfos) $ ConP (mkName "Nothing") []
+                  makeNothingPattern = ConP (typeNameToName r) $ replicate (Prelude.length fieldInfos) $ ConP (mkName "Nothing") []
                   funExp :: Exp
-                  funExp = AppE (ConE (mkName "Just")) $ foldl AppE (ConE $ mkName $ unwrapTypeName r) $ getFieldExps
+                  funExp = AppE (ConE (mkName "Just")) $ foldl AppE (ConE $ typeNameToName r) $ getFieldExps
                   makePattern :: Pat
                   makePattern = (ConP $ mkName $ show r) $ zipWith getFieldPat fieldInfos [1..]
                     where
@@ -612,7 +612,7 @@ makeOpaleyeModel t r = do
                   getFieldExps :: [Exp]
                   getFieldExps =  VarE <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
         maybeModelType :: Type
-        maybeModelType = AppT (ConT $ mkName "Maybe") (ConT $ mkName $ unwrapTypeName r)
+        maybeModelType = AppT (ConT $ mkName "Maybe") (ConT $ typeNameToName r)
         nullablesType :: Type
         nullablesType = ConT $ (mkName $ (unwrapTypeName $ makePGReadAllNullableTypeName r))
         instanceHeadType :: Type
@@ -628,13 +628,13 @@ makeOpaleyeModel t r = do
       return $ [conversionFunctionSig, conversionFunction]
       where
         conExp :: Exp -> Exp
-        conExp nullExp = foldl AppE (ConE $ mkName $ unwrapTypeName r) $ getFieldExps nullExp
+        conExp nullExp = foldl AppE (ConE $ typeNameToName r) $ getFieldExps nullExp
         getFieldExps :: Exp -> [Exp]
         getFieldExps nullExp = const nullExp <$> fieldInfos
     makeAllNullableFunction :: [ColumnInfo] -> Q [Dec]
     makeAllNullableFunction fieldInfos = do
       let
-        pgReadType = ConT $ (mkName $ unwrapTypeName $ makePGReadTypeName r)
+        pgReadType = ConT $ (typeNameToName $ makePGReadTypeName r)
         pgReadWithNullsType = ConT $ (mkName $ (unwrapTypeName $ makePGReadAllNullableTypeName r))
         toAllNullFuncName = makeToAllNullableFuncName r
         conversionFunctionSig = SigD (mkName toAllNullFuncName) $ AppT (AppT ArrowT pgReadType) pgReadWithNullsType
@@ -642,7 +642,7 @@ makeOpaleyeModel t r = do
       return $ [conversionFunctionSig, conversionFunction]
       where
         conExp :: Exp
-        conExp = foldl AppE (ConE $ mkName $ unwrapTypeName r) $ getFieldExps
+        conExp = foldl AppE (ConE $ typeNameToName r) $ getFieldExps
         getFieldExps :: [Exp]
         getFieldExps = zipWith getFieldExp fieldInfos [1..]
           where
@@ -652,7 +652,7 @@ makeOpaleyeModel t r = do
               mkVarExp :: Exp
               mkVarExp = VarE $ mkName $ "a" ++ (show idx)
         makePattern :: Pat
-        makePattern = ConP (mkName $ unwrapTypeName r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
+        makePattern = ConP (typeNameToName r) $ VarP <$> (mkName.(\x -> ('a':x)).show) <$>  take (Prelude.length fieldInfos) ([1..]::[Int])
     makeHaskellAlias :: TypeName -> Name -> [ColumnInfo] -> EnvM (Dec, Dec)
     makeHaskellAlias htname@(TypeName tn) poly_name fieldInfos = do
       let hname = mkName tn
@@ -667,7 +667,7 @@ makeOpaleyeModel t r = do
     makePgReadAlias name modelType fieldInfos = do
       readType <- makePgReadType modelType fieldInfos
       readTypeWithNulls <- makePgReadTypeWithNulls modelType fieldInfos
-      let nameWithNulls = mkName $ unwrapTypeName $ makePGReadAllNullableTypeName r
+      let nameWithNulls = typeNameToName $ makePGReadAllNullableTypeName r
       return $ (TySynD name [] readType, TySynD nameWithNulls [] readTypeWithNulls)
     makePgReadTypeWithNulls :: Name -> [ColumnInfo] -> EnvM Type
     makePgReadTypeWithNulls modelType fieldInfos = do
@@ -977,5 +977,5 @@ makeLenses'' modelname recordSpec protected makeProtected clg  = do
 makeLenses' :: TypeName -> [String] -> Bool -> EnvM [Dec]
 makeLenses' modelName protected makeProtected = do
   (_, _, clg) <- get
-  let modelTypeName = mkName $ unwrapTypeName $ makePolyName modelName
+  let modelTypeName = typeNameToName $ makePolyName modelName
   lift $ makeLenses'' modelName (RecordSpecName modelTypeName) protected makeProtected clg
