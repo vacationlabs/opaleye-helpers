@@ -31,7 +31,7 @@ data TableOptions = TableOptions {
   modelName :: TypeName
   , overrides :: [(ColumnName, OverrideType)]
   , protectedFields :: [ColumnName]
-  , autoDeriveInstances :: [TypeName] 
+  , autoDeriveInstances :: [Name] 
   , ignoreNullables :: [ColumnName]
   , includeColumns :: Maybe [ColumnName]
 }

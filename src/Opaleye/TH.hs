@@ -565,7 +565,7 @@ makeOpaleyeModel t r = do
   let recordName = typeNameToName r
   let recordPolyName = typeNameToName $ makePolyName r
   let fieldInfos = getFieldInfosForTable dbInfo t
-  deriveInstances <- lift $ mapM (fmap (ConT).safeLookupTypeName) $ autoDeriveInstances $ getTableOptions t options
+  let deriveInstances = ConT <$> (autoDeriveInstances $ getTableOptions t options)
   fields <- mapM (lift.newName.unwrapColumnName.columnName) fieldInfos
   let rec = DataD [] recordPolyName (tVarBindings fields) Nothing [RecC recordName $ getConstructorArgs $ zip (mkName.(makeFieldName r).columnName <$> fieldInfos) fields] deriveInstances
   (haskell, haskellWithMaybes) <- makeHaskellAlias r recordPolyName fieldInfos
