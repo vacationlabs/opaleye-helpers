@@ -743,6 +743,7 @@ makeNewtypeInstances = do
           lift $ [d|
             instance DbField $(ntNameQ) where
               mappedColumnInfo = MappedColumnInfo ci_
+              convertFromBase = $(return $ ConE ntName')
             |]
         makeQueryRunnerInstance :: ColumnInfo -> Name -> EnvM [Dec]
         makeQueryRunnerInstance cli ntName' = do

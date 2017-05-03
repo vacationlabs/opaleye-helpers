@@ -67,6 +67,7 @@ data MappedColumnInfo a = MappedColumnInfo ColumnInfo deriving(Show)
 
 class DbField a where
   mappedColumnInfo :: MappedColumnInfo a
+  convertFromBase :: (BaseForm a) -> a
 
 type TableInfo = (TableName, [ColumnInfo])
 type DbInfo = [TableInfo]
