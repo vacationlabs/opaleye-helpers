@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveLift #-}
+{-# LANGUAGE TypeFamilies #-}
 
 module Opaleye.TH.Data where
 
@@ -74,3 +75,5 @@ type LensClassGenerated = [String]
 type Env = (DbInfo, Options, LensClassGenerated)
 type EnvM a = StateT Env Q a
 data RecordSpec = RecordSpecName Name | RecordSpecDec DecsQ
+
+type family BaseForm a

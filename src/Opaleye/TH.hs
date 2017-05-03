@@ -523,7 +523,12 @@ collectNewTypes = do
     getNewTypes (tbName, tbOptions) = do
       (dbInfo, _, _) <- get
       let fieldInfos = getFieldInfosForTable dbInfo tbName
-      return $ catMaybes $ (tryNewType tbOptions) <$> fieldInfos
+      return $ catMaybes $ (tryNewType $ (validateNewTypes tbOptions fieldInfos)) <$> fieldInfos
+      where
+        validateNewTypes :: TableOptions -> [ColumnInfo] -> TableOptions
+        validateNewTypes to' cis = let difference = (fst <$> overrides to') \\ (columnName <$> cis) in
+          if (length difference > 0) then (error $ "Cannot find columns mentioned in the overrides for table '" ++ (unwrapTablename tbName) ++ "':" ++ (show difference)) else to'
+
     tryNewType :: TableOptions -> ColumnInfo -> Maybe (ColumnInfo, TypeName)
     tryNewType to' ci = do
       override <- lookup (columnName ci) (overrides to')
@@ -541,13 +546,19 @@ makeNewTypes = do
   makeNewType (added, decs) (ci, nt_name) = do
     if nt_name `elem` added then (return (added, decs)) else do
       dec <- makeNewType' nt_name
-      return (nt_name:added, dec:decs)
+      baseFormInstance <- makeTypeInstance nt_name
+      return (nt_name:added, dec:baseFormInstance:decs)
     where
       makeNewType' :: TypeName -> EnvM Dec
       makeNewType' (TypeName name) = do
         let bang' = Bang NoSourceUnpackedness NoSourceStrictness
         haskellType <- makeRawHaskellType ci
         return $ NewtypeD [] (mkName name) [] Nothing (NormalC (mkName name) [(bang', haskellType)]) [ConT ''Show, ConT ''Eq, ConT ''Ord, ConT ''Generic]
+      makeTypeInstance :: TypeName -> EnvM Dec
+      makeTypeInstance (TypeName name) = do
+        haskellType <- makeRawHaskellType ci
+        return $ TySynInstD (mkName "BaseForm") (TySynEqn [ConT $ mkName name] haskellType)
+
 
 makeFieldName :: TypeName -> ColumnName -> String
 makeFieldName (TypeName modelName) (ColumnName (s:ss)) = "_" ++ (toLower <$> modelName) ++ (toUpper s:replaceUnderscore ss)
